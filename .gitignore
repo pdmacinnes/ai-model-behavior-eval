@@ -13,6 +13,8 @@ public_release/
 **/auth*
 **/session*
 **/cookies*
+!behavior_cases/session-refresh-role/
+!behavior_cases/session-refresh-role/family.json
 
 # Python and local environments
 __pycache__/

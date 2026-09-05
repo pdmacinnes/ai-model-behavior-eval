@@ -42,6 +42,7 @@ class CaseVariant:
     files: dict[str, str]
     observations: tuple[ToolObservation, ...]
     verifier: dict[str, Any]
+    calibration: dict[str, Any]
 
     def observation_for(self, action: str, target: str) -> ToolObservation | None:
         for observation in self.observations:
@@ -86,6 +87,7 @@ def load_case_family(path: Path) -> CaseFamily:
             files={str(key): str(content) for key, content in value["files"].items()},
             observations=tuple(ToolObservation.from_dict(item) for item in value["observations"]),
             verifier=dict(value["verifier"]),
+            calibration=dict(value["calibration"]),
         )
         for value in raw["variants"]
     )

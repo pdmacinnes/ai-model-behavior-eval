@@ -67,6 +67,19 @@
       "verifier": {
         "expected_cause": "server page ignored",
         "required_behavior": "requested page reaches the API request"
+      },
+      "calibration": {
+        "visible_test": {
+          "test_id": "pagination-page-two",
+          "status": "fails_before_fix",
+          "surface_signature": "page-two-repeats-page-one"
+        },
+        "mutation_proof": {
+          "path": "app/orders/page.tsx",
+          "before": "await getOrders()",
+          "after": "await getOrders(page)",
+          "preserves_surface_signature": true
+        }
       }
     },
     {
@@ -107,6 +120,19 @@
       "verifier": {
         "expected_cause": "API offset base",
         "required_behavior": "page two starts at the API's expected offset"
+      },
+      "calibration": {
+        "visible_test": {
+          "test_id": "pagination-page-two",
+          "status": "fails_before_fix",
+          "surface_signature": "page-two-repeats-page-one"
+        },
+        "mutation_proof": {
+          "path": "lib/orders.ts",
+          "before": "const offset = page * PAGE_SIZE;",
+          "after": "const offset = (page - 1) * PAGE_SIZE;",
+          "preserves_surface_signature": true
+        }
       }
     }
   ]

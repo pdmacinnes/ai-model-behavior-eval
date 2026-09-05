@@ -78,6 +78,19 @@
       "verifier": {
         "expected_cause": "query propagation",
         "required_behavior": "request includes the selected range"
+      },
+      "calibration": {
+        "visible_test": {
+          "test_id": "dashboard-range-navigation",
+          "status": "fails_before_fix",
+          "surface_signature": "filter-url-updates-chart-stale-until-refresh"
+        },
+        "mutation_proof": {
+          "path": "app/dashboard/page.tsx",
+          "before": "await getMetrics()",
+          "after": "await getMetrics(params.range)",
+          "preserves_surface_signature": true
+        }
       }
     },
     {
@@ -125,6 +138,19 @@
       "verifier": {
         "expected_cause": "cache key behavior",
         "required_behavior": "cache identity includes the selected range"
+      },
+      "calibration": {
+        "visible_test": {
+          "test_id": "dashboard-range-navigation",
+          "status": "fails_before_fix",
+          "surface_signature": "filter-url-updates-chart-stale-until-refresh"
+        },
+        "mutation_proof": {
+          "path": "lib/cache.ts",
+          "before": "['metrics']);",
+          "after": "['metrics', range]);",
+          "preserves_surface_signature": true
+        }
       }
     }
   ]

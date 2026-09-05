@@ -1,0 +1,141 @@
+{
+  "family_id": "session-refresh-role",
+  "dimension": "evidence_selection_and_state_boundary",
+  "initial_context": {
+    "prompt": "After switching an account from viewer to admin, the admin navigation does not appear until a full refresh. Investigate before editing and distinguish server state from client state.",
+    "initial_observation": "The role mutation succeeds, the URL does not change, and a full refresh renders the admin navigation."
+  },
+  "allowed_actions": [
+    "inspect",
+    "search",
+    "trace",
+    "run_test",
+    "edit",
+    "stop"
+  ],
+  "action_costs": {
+    "inspect": 1,
+    "search": 1,
+    "trace": 2,
+    "run_test": 2,
+    "edit": 3,
+    "stop": 0
+  },
+  "max_cost": 5,
+  "perturbations": [
+    {
+      "type": "counterfactual",
+      "description": "Keep the role-switch symptom constant while changing whether the server-rendered session prop or client session cache is stale."
+    }
+  ],
+  "variants": [
+    {
+      "variant_id": "server-session-prop",
+      "surface_signature": "role-switch-admin-nav-stale-until-refresh",
+      "hidden_cause": "server session prop",
+      "hypotheses": [
+        "server session prop",
+        "client session cache",
+        "authorization endpoint"
+      ],
+      "files": {
+        "app/settings/page.tsx": "export default async function Settings() {\n  const session = await getSession();\n  return <RoleSwitcher initialRole={session.role} />;\n}\n",
+        "components/RoleSwitcher.tsx": "'use client';\nexport function RoleSwitcher({ initialRole }) {\n  const [role, setRole] = useState(initialRole);\n  return <RoleSelect value={role} onChange={changeRole} />;\n}\n",
+        "lib/session.ts": "export async function getSession() {\n  return requestContext.sessionSnapshot;\n}\n",
+        "lib/roles.ts": "export async function changeRole(role: string) {\n  return fetch('/api/role', { method: 'POST', body: JSON.stringify({ role }) });\n}\n",
+        "tests/role-switch.test.ts": "it('renders admin navigation after switching roles', async () => { /* hidden fixture */ });\n"
+      },
+      "observations": [
+        {
+          "action": "trace",
+          "target": "role-transition",
+          "content": "POST /api/role returns the new role, but the next server render reads the request-context session snapshot from before the mutation.",
+          "reveals": ["server session prop"]
+        },
+        {
+          "action": "inspect",
+          "target": "lib/session.ts",
+          "content": "getSession reads a request-scoped snapshot that is not invalidated after the role mutation.",
+          "reveals": ["server session prop"]
+        },
+        {
+          "action": "inspect",
+          "target": "components/RoleSwitcher.tsx",
+          "content": "The client state updates locally, but server-rendered navigation receives initialRole from the stale request snapshot.",
+          "reveals": ["server session prop"]
+        }
+      ],
+      "verifier": {
+        "expected_cause": "server session prop",
+        "required_behavior": "server navigation receives the post-mutation role"
+      },
+      "calibration": {
+        "visible_test": {
+          "test_id": "role-switch-navigation",
+          "status": "fails_before_fix",
+          "surface_signature": "role-switch-admin-nav-stale-until-refresh"
+        },
+        "mutation_proof": {
+          "path": "lib/session.ts",
+          "before": "return requestContext.sessionSnapshot;",
+          "after": "return await requestContext.refreshSession();",
+          "preserves_surface_signature": true
+        }
+      }
+    },
+    {
+      "variant_id": "client-session-cache",
+      "surface_signature": "role-switch-admin-nav-stale-until-refresh",
+      "hidden_cause": "client session cache",
+      "hypotheses": [
+        "server session prop",
+        "client session cache",
+        "authorization endpoint"
+      ],
+      "files": {
+        "app/settings/page.tsx": "export default async function Settings() {\n  const session = await getSession();\n  return <RoleSwitcher initialRole={session.role} />;\n}\n",
+        "components/RoleSwitcher.tsx": "'use client';\nexport function RoleSwitcher({ initialRole }) {\n  const session = useSessionCache(initialRole);\n  return <RoleSelect value={session.role} onChange={changeRole} />;\n}\n",
+        "lib/session.ts": "export async function getSession() {\n  return fetch('/api/session', { cache: 'no-store' }).then((r) => r.json());\n}\n",
+        "lib/roles.ts": "export async function changeRole(role: string) {\n  return fetch('/api/role', { method: 'POST', body: JSON.stringify({ role }) });\n}\n",
+        "tests/role-switch.test.ts": "it('renders admin navigation after switching roles', async () => { /* hidden fixture */ });\n"
+      },
+      "observations": [
+        {
+          "action": "trace",
+          "target": "role-transition",
+          "content": "POST /api/role returns admin and the server render reads admin, but the client session cache continues to expose viewer until refresh.",
+          "reveals": ["client session cache"]
+        },
+        {
+          "action": "inspect",
+          "target": "lib/session.ts",
+          "content": "The session request is uncached, so the server can see the new role.",
+          "reveals": ["server session current"]
+        },
+        {
+          "action": "inspect",
+          "target": "components/RoleSwitcher.tsx",
+          "content": "useSessionCache retains the initial viewer value after the mutation and does not invalidate its client entry.",
+          "reveals": ["client session cache"]
+        }
+      ],
+      "verifier": {
+        "expected_cause": "client session cache",
+        "required_behavior": "client session cache invalidates after role mutation"
+      },
+      "calibration": {
+        "visible_test": {
+          "test_id": "role-switch-navigation",
+          "status": "fails_before_fix",
+          "surface_signature": "role-switch-admin-nav-stale-until-refresh"
+        },
+        "mutation_proof": {
+          "path": "components/RoleSwitcher.tsx",
+          "before": "useSessionCache(initialRole);",
+          "after": "useSessionCache(initialRole, { invalidateOn: 'role-change' });",
+          "preserves_surface_signature": true
+        }
+      }
+    }
+  ]
+}

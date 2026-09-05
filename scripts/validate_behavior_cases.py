@@ -4,6 +4,7 @@ import json
 import sys
 from pathlib import Path
 
+from evidence_eval.calibration import calibrate_case_family
 from evidence_eval.case_validation import validate_case_family
 from evidence_eval.schema import load_case_family
 
@@ -12,7 +13,11 @@ def main() -> int:
     root = Path(__file__).resolve().parents[1]
     reports = []
     for path in sorted((root / "behavior_cases").glob("*/family.json")):
-        report = validate_case_family(load_case_family(path))
+        family = load_case_family(path)
+        report = validate_case_family(family)
+        calibration = calibrate_case_family(family)
+        report["calibration"] = calibration
+        report["valid"] = report["valid"] and calibration["valid"]
         report["source_path"] = str(path.relative_to(root))
         reports.append(report)
     if not reports:
