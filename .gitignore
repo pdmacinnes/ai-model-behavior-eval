@@ -1,0 +1,30 @@
+# Raw and local research artifacts
+results/
+registrations/v1.json
+artifacts/raw/
+artifacts/*.log
+public_release/
+
+# Credentials and local configuration
+.env
+.env.*
+.cursor/
+.claude/
+**/auth*
+**/session*
+**/cookies*
+
+# Python and local environments
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+env/
+
+# Diagnostics and temporary workspaces
+*.trace
+*.debug
+tmp/
+temp/
+workspaces/

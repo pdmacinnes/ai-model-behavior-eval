@@ -1,0 +1,13 @@
+[build-system]
+requires = []
+build-backend = "backend"
+
+[project]
+name = "evidence-bounded-debugging-behavior-study"
+version = "0.1.0"
+description = "Public, reproducible study of evidence-bounded debugging behavior in coding agents"
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.evidence-eval]
+python-test-command = "python -m unittest discover -s tests -v"

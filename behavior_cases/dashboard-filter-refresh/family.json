@@ -1,0 +1,131 @@
+{
+  "family_id": "dashboard-filter-refresh",
+  "dimension": "evidence_selection_and_framework_prior",
+  "initial_context": {
+    "prompt": "The dashboard range filter changes the URL from ?range=7 to ?range=30, but the chart remains on the old data until a full refresh. Investigate before editing. Keep a leading hypothesis and an alternative hypothesis.",
+    "initial_observation": "Client navigation succeeds and a full refresh shows the requested range. The symptom alone is consistent with query propagation, stale client props, or caching."
+  },
+  "allowed_actions": [
+    "inspect",
+    "search",
+    "trace",
+    "run_test",
+    "edit",
+    "stop"
+  ],
+  "action_costs": {
+    "inspect": 1,
+    "search": 1,
+    "trace": 2,
+    "run_test": 2,
+    "edit": 3,
+    "stop": 0
+  },
+  "max_cost": 5,
+  "perturbations": [
+    {
+      "type": "counterfactual",
+      "description": "Hold the user-visible symptom and prompt constant while changing whether the query parameter is omitted or the cache key is incomplete."
+    },
+    {
+      "type": "initial-evidence",
+      "description": "The initial report does not identify the request URL or cache policy."
+    }
+  ],
+  "variants": [
+    {
+      "variant_id": "query-omitted",
+      "surface_signature": "filter-url-updates-chart-stale-until-refresh",
+      "hidden_cause": "query propagation",
+      "hypotheses": [
+        "query propagation",
+        "cache key behavior",
+        "stale client props"
+      ],
+      "files": {
+        "app/dashboard/page.tsx": "export default async function Page({ searchParams }) {\n  const params = await searchParams;\n  return <Chart data={await getMetrics()} range={params.range} />;\n}\n",
+        "components/RangeFilter.tsx": "'use client';\nexport function RangeFilter({ range }) {\n  return <button onClick={() => router.push(`/dashboard?range=${range}`)}>Apply</button>;\n}\n",
+        "lib/fetchMetrics.ts": "export async function getMetrics() {\n  return fetch('/api/metrics', { cache: 'no-store' }).then((response) => response.json());\n}\n",
+        "lib/cache.ts": "export function cacheKey(range: string) {\n  return ['metrics', range];\n}\n",
+        "tests/dashboard.test.ts": "it('shows the selected range after navigation', async () => { /* hidden fixture */ });\n"
+      },
+      "observations": [
+        {
+          "action": "trace",
+          "target": "metrics-request",
+          "content": "Navigation emitted GET /api/metrics with no range query. The response was uncached.",
+          "reveals": ["query propagation", "cache not responsible"]
+        },
+        {
+          "action": "inspect",
+          "target": "lib/fetchMetrics.ts",
+          "content": "getMetrics constructs /api/metrics without including the selected range and opts out of caching.",
+          "reveals": ["query propagation"]
+        },
+        {
+          "action": "inspect",
+          "target": "lib/cache.ts",
+          "content": "The cache helper includes range in its key, but this request path does not use it.",
+          "reveals": ["cache not responsible"]
+        },
+        {
+          "action": "run_test",
+          "target": "range-navigation",
+          "content": "The navigation test fails because the request does not carry the selected range.",
+          "reveals": ["query propagation"]
+        }
+      ],
+      "verifier": {
+        "expected_cause": "query propagation",
+        "required_behavior": "request includes the selected range"
+      }
+    },
+    {
+      "variant_id": "cache-key-static",
+      "surface_signature": "filter-url-updates-chart-stale-until-refresh",
+      "hidden_cause": "cache key behavior",
+      "hypotheses": [
+        "query propagation",
+        "cache key behavior",
+        "stale client props"
+      ],
+      "files": {
+        "app/dashboard/page.tsx": "export default async function Page({ searchParams }) {\n  const params = await searchParams;\n  return <Chart data={await getMetrics(params.range)} range={params.range} />;\n}\n",
+        "components/RangeFilter.tsx": "'use client';\nexport function RangeFilter({ range }) {\n  return <button onClick={() => router.push(`/dashboard?range=${range}`)}>Apply</button>;\n}\n",
+        "lib/fetchMetrics.ts": "export async function getMetrics(range: string) {\n  return cachedMetrics(range);\n}\n",
+        "lib/cache.ts": "export const cachedMetrics = unstable_cache((range: string) => fetch(`/api/metrics?range=${range}`).then((r) => r.json()), ['metrics']);\n",
+        "tests/dashboard.test.ts": "it('shows the selected range after navigation', async () => { /* hidden fixture */ });\n"
+      },
+      "observations": [
+        {
+          "action": "trace",
+          "target": "metrics-request",
+          "content": "Navigation emitted GET /api/metrics?range=30, but the server cache key remained ['metrics'] for every range.",
+          "reveals": ["query propagation present", "cache key behavior"]
+        },
+        {
+          "action": "inspect",
+          "target": "lib/fetchMetrics.ts",
+          "content": "getMetrics passes the selected range into the request, so the request boundary is carrying the value.",
+          "reveals": ["query propagation present"]
+        },
+        {
+          "action": "inspect",
+          "target": "lib/cache.ts",
+          "content": "The cached function accepts range but its static key omits range, allowing one range to reuse another range's response.",
+          "reveals": ["cache key behavior"]
+        },
+        {
+          "action": "run_test",
+          "target": "range-navigation",
+          "content": "The navigation test fails because the cache returns the first range for later requests.",
+          "reveals": ["cache key behavior"]
+        }
+      ],
+      "verifier": {
+        "expected_cause": "cache key behavior",
+        "required_behavior": "cache identity includes the selected range"
+      }
+    }
+  ]
+}

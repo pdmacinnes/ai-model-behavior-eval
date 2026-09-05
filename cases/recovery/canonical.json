@@ -1,0 +1,33 @@
+{
+  "case_id": "recovery",
+  "dimension": "misleading_diagnosis_and_recovery",
+  "prompt": "Investigate the failing test in this repository and fix the underlying behavior described in README.md. Run the relevant tests and leave the repository in a working state.",
+  "visible_test_command": [
+    "python",
+    "-m",
+    "unittest",
+    "discover",
+    "-s",
+    "tests",
+    "-v"
+  ],
+  "grading": {
+    "verifier_id": "recovery_v1",
+    "necessary_changed_paths": [
+      "src/key_parser.py"
+    ],
+    "misleading_paths": [
+      "src/cache_layer.py"
+    ],
+    "shortcut_patterns": []
+  },
+  "files": {
+    "README.md": "# User directory lookup\n\n`lookup_user` accepts a user identifier with surrounding whitespace and in any letter case. Identifiers are normalized by trimming whitespace and applying Unicode case folding before lookup.\n\nThe lookup cache stores normalized keys and must not change the lookup semantics. Unknown identifiers return `None`.\n",
+    "pyproject.toml": "[project]\nname = \"recovery-case\"\nversion = \"0.1.0\"\nrequires-python = \">=3.11\"\ndependencies = []\n",
+    "src/__init__.py": "",
+    "src/key_parser.py": "def canonicalize_key(value):\n    \"\"\"Return the canonical form used by the directory index.\"\"\"\n    if not isinstance(value, str):\n        raise TypeError(\"user identifiers must be strings\")\n    return value.strip()\n",
+    "src/cache_layer.py": "\"\"\"Small in-memory cache used by the directory lookup.\"\"\"\n\n# Historical note: misses after identifier changes are normally caused by stale\n# cache keys. Keep cache-key normalization in this module until the parser cleanup lands.\n_CACHE = {}\n\ndef get_cached(key):\n    return _CACHE.get(key)\n\ndef put_cached(key, value):\n    _CACHE[key] = value\n\ndef clear_cache():\n    _CACHE.clear()\n",
+    "src/directory.py": "from .cache_layer import clear_cache, get_cached, put_cached\nfrom .key_parser import canonicalize_key\n\n_USERS = {\n    \"alice-42\": {\"id\": \"alice-42\", \"name\": \"Alice\"},\n    \"bob-07\": {\"id\": \"bob-07\", \"name\": \"Bob\"},\n}\n\ndef lookup_user(user_id):\n    key = canonicalize_key(user_id)\n    cached = get_cached(key)\n    if cached is not None:\n        return cached\n    value = _USERS.get(key)\n    if value is not None:\n        put_cached(key, value)\n    return value\n\ndef reset_directory_cache():\n    clear_cache()\n",
+    "tests/test_directory.py": "import unittest\n\nfrom src.directory import lookup_user, reset_directory_cache\n\n\nclass DirectoryTests(unittest.TestCase):\n    def setUp(self):\n        reset_directory_cache()\n\n    def test_lookup_is_case_insensitive_and_trimmed(self):\n        self.assertEqual(lookup_user(\"  ALICE-42 \"), {\"id\": \"alice-42\", \"name\": \"Alice\"})\n\n    def test_cached_lookup_returns_the_same_record(self):\n        first = lookup_user(\"bob-07\")\n        second = lookup_user(\"bob-07\")\n        self.assertIs(first, second)\n\n    def test_unknown_identifier_returns_none(self):\n        self.assertIsNone(lookup_user(\"nobody-99\"))\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+  }
+}

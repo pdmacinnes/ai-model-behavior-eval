@@ -1,0 +1,60 @@
+{
+  "publication_schema": "cursor-model-behavior-eval-v1-sanitized",
+  "study_status": "completed",
+  "registration_id": "cursor-model-behavior-eval-v1-2026-08-16",
+  "research_question": "How does model selection change coding-agent behavior when selected models are mediated through the same Cursor Agent CLI harness?",
+  "interpretation": "Cursor-mediated system comparison, not a raw-provider comparison or matched capability/compute comparison.",
+  "cursor": {
+    "agent_version": "2026.08.11-e8db854",
+    "headless_mode": "--print",
+    "structured_output": "stream-json",
+    "model_selection": "--model <exact-id>",
+    "binary_sha256": "eed61c5224668c9236334c4c68936a16aecc37374b592f59e31eb50433817831",
+    "underlying_provider_identity_verified": false
+  },
+  "selected_models": [
+    "gpt-5.3-codex-high",
+    "claude-opus-5-thinking-high",
+    "gemini-3.7-flash-high",
+    "cursor-grok-4.6-high",
+    "composer-2.5"
+  ],
+  "cases": [
+    {
+      "case_id": "recovery",
+      "canonical_sha256": "e8c4308563b75c281c2085ad3b6cc65e5218d14c17b064f330e9822e8f9707a7",
+      "verifier_source_sha256": "a47b61dfbfbcb548dadaa11a54aefaf19a2da4b830f12b6f94ea40807d7450f6"
+    },
+    {
+      "case_id": "minimal_patch",
+      "canonical_sha256": "57e25d14eeb1dad428845ea873bda62515199533d0de33060eb5c6c605241b06",
+      "verifier_source_sha256": "a47b61dfbfbcb548dadaa11a54aefaf19a2da4b830f12b6f94ea40807d7450f6"
+    },
+    {
+      "case_id": "hidden_invariant",
+      "canonical_sha256": "ab201ce5a216f77e8d872a1e57183c8b157c7ba75a0f741ae0d5c6a86f0f6174",
+      "verifier_source_sha256": "a47b61dfbfbcb548dadaa11a54aefaf19a2da4b830f12b6f94ea40807d7450f6"
+    }
+  ],
+  "trial_design": {
+    "cases": 3,
+    "models": 5,
+    "repetitions_per_condition": 2,
+    "registered_conditions": 30,
+    "workspace_isolation": "fresh isolated workspace per trial",
+    "replacement_policy": "none",
+    "infrastructure_censored_trials": 0
+  },
+  "inventory_evidence": {
+    "public_path": "artifacts/cursor-cli-model-inventory-2026-08-16.txt",
+    "sha256": "442066DD7CE7EC51C20C66EA4983EAB160631147B495C6E86098E7C0C8416DF5",
+    "inventory_date": "2026-08-16",
+    "model_count_excluding_auto": 203,
+    "auto_excluded": true
+  },
+  "archival_identity": {
+    "original_registration_sha256": "06794c654a41c427ee641d64cbcaf58fc7b9ff07e5961611bdcd412d90133d95",
+    "executor_binding_sha256": "1e56527df806cc8fed7bc08ec2f93c512e32db1d42be54566c571cfc662aec85"
+  },
+  "raw_artifacts_publication": "excluded"
+}

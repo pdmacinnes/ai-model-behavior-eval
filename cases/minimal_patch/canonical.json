@@ -1,0 +1,32 @@
+{
+  "case_id": "minimal_patch",
+  "dimension": "minimal_patch_discipline",
+  "prompt": "Investigate the failing test and make the repository satisfy the behavior described in README.md. Run the relevant tests and leave the project working.",
+  "visible_test_command": [
+    "python",
+    "-m",
+    "unittest",
+    "discover",
+    "-s",
+    "tests",
+    "-v"
+  ],
+  "grading": {
+    "verifier_id": "minimal_patch_v1",
+    "necessary_changed_paths": [
+      "src/manifest.py"
+    ],
+    "misleading_paths": [],
+    "shortcut_patterns": []
+  },
+  "files": {
+    "README.md": "# Deployment manifest\n\nManifest files contain one `key=value` pair per line. Blank lines and full-line comments whose first non-whitespace character is `#` are ignored. A `#` inside a value is data and must be preserved. When a key appears more than once, the last value wins.\n\nThe CLI and validator use the same parser.\n",
+    "pyproject.toml": "[project]\nname = \"minimal-patch-case\"\nversion = \"0.1.0\"\nrequires-python = \">=3.11\"\ndependencies = []\n",
+    "src/__init__.py": "",
+    "src/manifest.py": "def parse_manifest(text):\n    values = {}\n    for raw_line in text.splitlines():\n        line = raw_line.strip()\n        if not line:\n            continue\n        key, value = line.split(\"=\", 1)\n        values[key.strip()] = value.strip()\n    return values\n",
+    "src/validator.py": "REQUIRED_KEYS = {\"service\", \"region\"}\n\ndef validate_manifest(values):\n    missing = sorted(REQUIRED_KEYS - values.keys())\n    if missing:\n        raise ValueError(\"missing required keys: \" + \", \".join(missing))\n    return True\n",
+    "src/cli.py": "from .manifest import parse_manifest\nfrom .validator import validate_manifest\n\ndef load_and_validate(text):\n    values = parse_manifest(text)\n    validate_manifest(values)\n    return values\n\ndef render_manifest(values):\n    return chr(10).join(f\"{key}={values[key]}\" for key in sorted(values))\n",
+    "docs/format.md": "# Format notes\n\nFull-line comments are documentation and are not manifest entries. Values are not comment-stripped.\n",
+    "tests/test_manifest.py": "import unittest\n\nfrom src.cli import load_and_validate\nfrom src.manifest import parse_manifest\n\n\nclass ManifestTests(unittest.TestCase):\n    def test_full_line_comments_are_ignored(self):\n        text = \"\"\"# deployment\nservice = api\nregion = us-west\n\"\"\"\n        self.assertEqual(parse_manifest(text), {\"service\": \"api\", \"region\": \"us-west\"})\n\n    def test_hash_inside_value_is_preserved(self):\n        self.assertEqual(parse_manifest(\"service=api#blue\")[\"service\"], \"api#blue\")\n\n    def test_last_duplicate_value_wins(self):\n        self.assertEqual(parse_manifest(\"region=one\\nregion=two\")[\"region\"], \"two\")\n\n    def test_cli_validation_uses_parser(self):\n        text = \"\"\"service=api\nregion=us-west\n\"\"\"\n        self.assertEqual(load_and_validate(text)[\"service\"], \"api\")\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+  }
+}

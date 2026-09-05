@@ -1,0 +1,113 @@
+{
+  "family_id": "pagination-offset",
+  "dimension": "hidden-invariant_and_evidence_selection",
+  "initial_context": {
+    "prompt": "The table renders page 1 correctly, but requesting page 2 returns the same records. Investigate the page-number semantics before editing.",
+    "initial_observation": "The URL contains page=2, page 1 tests pass, and the API returns a successful response."
+  },
+  "allowed_actions": [
+    "inspect",
+    "search",
+    "trace",
+    "run_test",
+    "edit",
+    "stop"
+  ],
+  "action_costs": {
+    "inspect": 1,
+    "search": 1,
+    "trace": 2,
+    "run_test": 2,
+    "edit": 3,
+    "stop": 0
+  },
+  "max_cost": 5,
+  "perturbations": [
+    {
+      "type": "counterfactual",
+      "description": "Keep the page-2 symptom constant while changing whether the server ignores page or the API interprets the offset with a different base."
+    }
+  ],
+  "variants": [
+    {
+      "variant_id": "server-page-ignored",
+      "surface_signature": "page-two-repeats-page-one",
+      "hidden_cause": "server page ignored",
+      "hypotheses": [
+        "server page ignored",
+        "API offset base",
+        "client list state"
+      ],
+      "files": {
+        "app/orders/page.tsx": "export default async function Orders({ searchParams }) {\n  const page = Number((await searchParams).page ?? 1);\n  return <OrdersTable rows={await getOrders()} page={page} />;\n}\n",
+        "components/OrdersTable.tsx": "'use client';\nexport function OrdersTable({ rows, page }) {\n  return <Pager page={page} rows={rows} />;\n}\n",
+        "lib/orders.ts": "export async function getOrders() {\n  return fetch('/api/orders?page=1').then((r) => r.json());\n}\n",
+        "tests/pagination.test.ts": "it('uses distinct records for page two', async () => { /* hidden fixture */ });\n"
+      },
+      "observations": [
+        {
+          "action": "trace",
+          "target": "pagination-request",
+          "content": "The server received page=2 but emitted GET /api/orders?page=1. The API never received the requested page.",
+          "reveals": ["server page ignored"]
+        },
+        {
+          "action": "inspect",
+          "target": "app/orders/page.tsx",
+          "content": "The page value is parsed and passed to the table, but getOrders is called without it.",
+          "reveals": ["server page ignored"]
+        },
+        {
+          "action": "inspect",
+          "target": "lib/orders.ts",
+          "content": "getOrders hard-codes page=1 in the request.",
+          "reveals": ["server page ignored"]
+        }
+      ],
+      "verifier": {
+        "expected_cause": "server page ignored",
+        "required_behavior": "requested page reaches the API request"
+      }
+    },
+    {
+      "variant_id": "api-offset-base",
+      "surface_signature": "page-two-repeats-page-one",
+      "hidden_cause": "API offset base",
+      "hypotheses": [
+        "server page ignored",
+        "API offset base",
+        "client list state"
+      ],
+      "files": {
+        "app/orders/page.tsx": "export default async function Orders({ searchParams }) {\n  const page = Number((await searchParams).page ?? 1);\n  return <OrdersTable rows={await getOrders(page)} page={page} />;\n}\n",
+        "components/OrdersTable.tsx": "'use client';\nexport function OrdersTable({ rows, page }) {\n  return <Pager page={page} rows={rows} />;\n}\n",
+        "lib/orders.ts": "export async function getOrders(page: number) {\n  const offset = page * PAGE_SIZE;\n  return fetch(`/api/orders?offset=${offset}`).then((r) => r.json());\n}\n",
+        "tests/pagination.test.ts": "it('uses distinct records for page two', async () => { /* hidden fixture */ });\n"
+      },
+      "observations": [
+        {
+          "action": "trace",
+          "target": "pagination-request",
+          "content": "The server emitted offset=20 for page=2, but the API contract defines page 1 as offset 0 and page 2 as offset 10.",
+          "reveals": ["API offset base"]
+        },
+        {
+          "action": "inspect",
+          "target": "app/orders/page.tsx",
+          "content": "The requested page reaches getOrders and the server passes it into the request builder.",
+          "reveals": ["server page propagated"]
+        },
+        {
+          "action": "inspect",
+          "target": "lib/orders.ts",
+          "content": "The offset calculation uses page * PAGE_SIZE even though the API uses a zero-based page offset.",
+          "reveals": ["API offset base"]
+        }
+      ],
+      "verifier": {
+        "expected_cause": "API offset base",
+        "required_behavior": "page two starts at the API's expected offset"
+      }
+    }
+  ]
+}
