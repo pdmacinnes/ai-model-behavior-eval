@@ -28,10 +28,11 @@ From the project root:
 $env:PYTHONPATH = 'src'
 python scripts/validate_behavior_cases.py
 python scripts/run_behavior_proof.py
+python scripts/run_unattended_proof.py
 python -m unittest discover -s tests -v
 ```
 
-The validation and proof commands are designed to run unattended. Unsupported actions, budget violations, malformed checkpoints, and other protocol failures are returned deterministically and recorded in the trace.
+The validation and proof commands are designed to run unattended. The unattended proof writes immutable artifacts under `results/unattended-proof/`, which is ignored as local run output. Unsupported actions, budget violations, malformed checkpoints, and other protocol failures are returned deterministically and recorded in the trace.
 
 ## Scope and limitations
 
