@@ -55,7 +55,7 @@ The builder reads only `manifest.json`, `run.json`, `event_trace.json`, and `beh
 - A run with no accepted actions must produce empty sequences and null first-action fields, not an exception.
 - Duplicate run ids are rejected.
 - Unknown input fields are ignored rather than copied into the report.
-- A comparison is emitted only when two distinct variant slots can be paired within the same condition, family, and repetition. Unpaired runs remain in `runs`.
+- A comparison is emitted only when two distinct variant slots with available, non-censored behavioral observations can be paired within the same condition, family, and repetition. Unpaired or censored runs remain in `runs`.
 - Output is deterministic: source files and all report arrays are sorted by stable identifiers.
 
 ## Acceptance Criteria

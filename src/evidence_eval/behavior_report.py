@@ -316,7 +316,11 @@ def _comparison_key(run: dict[str, Any]) -> tuple[Any, ...]:
 def _build_comparisons(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     groups: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
     for run in runs:
-        if isinstance(run.get("variant_slot"), int):
+        if (
+            isinstance(run.get("variant_slot"), int)
+            and run.get("infrastructure_censored") is not True
+            and run.get("behavior_observation_available") is not False
+        ):
             groups.setdefault(_comparison_key(run), []).append(run)
 
     comparisons: list[dict[str, Any]] = []
@@ -424,6 +428,62 @@ def _build_profiles(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return profiles
 
 
+def _case_key(run: dict[str, Any]) -> tuple[Any, ...]:
+    condition = run.get("condition") if isinstance(run.get("condition"), dict) else {}
+    return run.get("batch_id"), condition.get("condition_id"), run.get("family_id")
+
+
+def _build_case_narratives(runs: list[dict[str, Any]], comparisons: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
+    for run in runs:
+        grouped.setdefault(_case_key(run), []).append(run)
+    comparisons_by_key: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
+    for comparison in comparisons:
+        key = (comparison.get("batch_id"), comparison.get("condition_id"), comparison.get("family_id"))
+        comparisons_by_key.setdefault(key, []).append(comparison)
+
+    narratives: list[dict[str, Any]] = []
+    for key in sorted(grouped, key=lambda item: tuple(str(part) for part in item)):
+        group = sorted(grouped[key], key=lambda run: run["run_id"])
+        group_comparisons = comparisons_by_key.get(key, [])
+        changed_comparisons = [item for item in group_comparisons if item.get("behavior_changed")]
+        changed_fields = sorted({field for item in group_comparisons for field in item.get("changed_behavior_fields", [])})
+        status_counts: dict[str, int] = {}
+        for run in group:
+            status = run.get("verifier_status") or "unavailable"
+            status_counts[str(status)] = status_counts.get(str(status), 0) + 1
+        if not group_comparisons:
+            narrative = "No paired comparison was available for this case group."
+        elif changed_comparisons:
+            field_text = ", ".join(changed_fields) if changed_fields else "the recorded behavior fields"
+            narrative = (
+                f"Across {len(changed_comparisons)} paired comparison(s), observable behavior changed in {field_text}. "
+                f"The group contains {len(group_comparisons)} paired comparison(s) total."
+            )
+        else:
+            narrative = (
+                f"Across {len(group_comparisons)} paired comparison(s), the compared observable behavior fields were preserved."
+            )
+        narrative += " Causal language is permitted only when the comparison was pre-registered."
+        narratives.append(
+            {
+                "batch_id": key[0],
+                "condition_id": key[1],
+                "family_id": key[2],
+                "run_count": len(group),
+                "repetition_count": len({run.get("repetition") for run in group}),
+                "variant_slots": sorted({run.get("variant_slot") for run in group if isinstance(run.get("variant_slot"), int)}),
+                "paired_comparison_count": len(group_comparisons),
+                "behavior_changed_comparison_count": len(changed_comparisons),
+                "changed_behavior_fields": changed_fields,
+                "verifier_status_counts": dict(sorted(status_counts.items())),
+                "infrastructure_censored_count": sum(bool(run.get("infrastructure_censored")) for run in group),
+                "narrative": narrative,
+            }
+        )
+    return narratives
+
+
 def build_behavior_report(source_root: Path, *, source_kind: str) -> dict[str, Any]:
     source_root = source_root.resolve()
     runs_root = source_root / "runs"
@@ -445,6 +505,7 @@ def build_behavior_report(source_root: Path, *, source_kind: str) -> dict[str, A
         runs.append(entry)
 
     runs.sort(key=lambda run: run["run_id"])
+    comparisons = _build_comparisons(runs)
     report = {
         "schema": BEHAVIOR_REPORT_SCHEMA,
         "report_version": 1,
@@ -456,7 +517,8 @@ def build_behavior_report(source_root: Path, *, source_kind: str) -> dict[str, A
         },
         "runs": runs,
         "profiles": _build_profiles(runs),
-        "comparisons": _build_comparisons(runs),
+        "comparisons": comparisons,
+        "case_narratives": _build_case_narratives(runs, comparisons),
         "limitations": [
             "This report describes observable behavior and does not rank models or compute a composite score.",
             "Paired differences are causal only when the comparison was pre-registered.",

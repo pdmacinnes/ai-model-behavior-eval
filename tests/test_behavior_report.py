@@ -133,6 +133,11 @@ class BehavioralReportTests(unittest.TestCase):
                 ["evidence_first_inspect", "evidence_first_search", "hypothesis_checkpoint_recorded", "no_repair_edit"],
             )
             self.assertEqual(len(report["comparisons"]), 1)
+            self.assertEqual(len(report["case_narratives"]), 1)
+            case_narrative = report["case_narratives"][0]
+            self.assertEqual(case_narrative["behavior_changed_comparison_count"], 1)
+            self.assertIn("observable behavior changed", case_narrative["narrative"])
+            self.assertIn("pre-registered", case_narrative["narrative"])
             comparison = report["comparisons"][0]
             self.assertEqual(comparison["first_variant_slot"], 1)
             self.assertEqual(comparison["second_variant_slot"], 2)
@@ -163,10 +168,27 @@ class BehavioralReportTests(unittest.TestCase):
             self.assertEqual(entry["verifier_status"], "infrastructure_censored")
             self.assertFalse(entry["behavior_observation_available"])
             self.assertEqual(report["profiles"][0]["observed_patterns"][0]["pattern"], "infrastructure_censored")
+            self.assertEqual(report["case_narratives"][0]["infrastructure_censored_count"], 1)
+            self.assertIn("No paired comparison", report["case_narratives"][0]["narrative"])
             self.assertFalse(entry["behavior"]["action_sequence"])
             self.assertIsNone(entry["behavior"]["repair_attempted"])
             self.assertIn("infrastructure-censored", entry["narrative"]["outcome"])
             self.assertIn("No behavioral trace", entry["narrative"]["evidence_path"])
+
+    def test_censored_variants_are_not_compared_as_behavior(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run_one = "batch-a-condition-a-dashboard-filter-refresh-v1-r1"
+            run_two = "batch-a-condition-a-dashboard-filter-refresh-v2-r1"
+            _write_json(root / "batches" / "batch-a" / "manifest.json", _manifest([(run_one, 1), (run_two, 2)]))
+            _run(root / "runs" / run_one, run_one, "query-omitted", censored=True)
+            _run(root / "runs" / run_two, run_two, "cache-key-static", censored=True)
+
+            report = build_behavior_report(root, source_kind="internal_artifacts")
+
+            self.assertEqual(report["comparisons"], [])
+            self.assertEqual(report["case_narratives"][0]["paired_comparison_count"], 0)
+            self.assertEqual(report["case_narratives"][0]["infrastructure_censored_count"], 2)
 
     def test_public_release_input_and_annotation_fallback(self):
         with tempfile.TemporaryDirectory() as directory:
