@@ -1,6 +1,7 @@
 """Evidence-bounded debugging behavior study primitives."""
 
 from .analysis import analyze_trace, compare_variants
+from .behavior_report import BEHAVIOR_REPORT_SCHEMA, BehaviorReportError, build_behavior_report
 from .calibration import calibrate_case_family
 from .case_validation import validate_case_family
 from .execution_policy import (
@@ -55,6 +56,9 @@ __all__ = [
     "ModelCondition",
     "ToolObservation",
     "analyze_trace",
+    "BEHAVIOR_REPORT_SCHEMA",
+    "BehaviorReportError",
+    "build_behavior_report",
     "calibrate_case_family",
     "compare_variants",
     "run_unattended_trial",
