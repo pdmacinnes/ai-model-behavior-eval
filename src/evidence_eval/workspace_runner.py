@@ -23,6 +23,7 @@ from .runner import AgentResult, ModelCondition
 from .schema import CaseFamily, CaseVariant
 from .workspace import MaterializedWorkspace, materialize_variant, resolve_workspace_path
 from .workspace_grader import WorkspaceVerifier, WorkspaceVerifierResult, invoke_workspace_verifier
+from .workspace_verifiers import registered_workspace_verifier
 
 
 WORKSPACE_PROTOCOL_VERSION = "evidence-workspace-v1"
@@ -447,7 +448,7 @@ def run_workspace_trial(
                 error="workspace verification skipped because the in-process adapter did not terminate",
             )
         else:
-            verifier_result = invoke_workspace_verifier(verifier, family, variant, workspace)
+            verifier_result = invoke_workspace_verifier(verifier or registered_workspace_verifier(family), family, variant, workspace)
         final_manifest = file_manifest(workspace)
         run_record = {
             "run_id": resolved_run_id,
@@ -464,6 +465,7 @@ def run_workspace_trial(
             "started_at_utc_epoch": started_at,
             "runtime_seconds": time.monotonic() - started,
             "execution_status": result.status,
+            "infrastructure_censored": result.status in {"adapter_timeout", "adapter_error"},
             "verifier_result": verifier_result.to_dict(),
             "initial_workspace_manifest_sha256": materialized.manifest_sha256,
             "final_workspace_manifest_sha256": _hash_json(final_manifest),

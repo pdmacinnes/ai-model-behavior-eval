@@ -104,8 +104,41 @@ class WorkspaceRunnerTests(unittest.TestCase):
             self.assertTrue(record["verifier_result"]["passed"])
             self.assertIn("lib/cache.ts", record["mutation_observer"]["touched_paths"])
 
+    def test_registered_pilot_verifier_runs_by_default(self):
+        family = load_case_family(ROOT / "behavior_cases" / "dashboard-filter-refresh" / "family.json")
+        condition = ModelCondition(
+            provider="deterministic",
+            model_id="workspace-registered-verifier",
+            adapter_id="test-workspace",
+            prompt=family.initial_context["prompt"],
+        )
+
+        def adapter(task, tools):
+            tools.edit_file("lib/cache.ts", "['metrics']);", "['metrics', range]);")
+            tools.stop("patch applied")
+            return AgentResult(status="completed")
+
+        with tempfile.TemporaryDirectory() as directory:
+            record = run_workspace_trial(
+                family,
+                family.variants[1],
+                condition,
+                adapter,
+                artifacts_root=Path(directory) / "artifacts",
+                workspace_parent=Path(directory) / "workspaces",
+                run_id="registered-verifier-run",
+            )
+        self.assertEqual(record["verifier_result"]["verifier_id"], "dashboard-filter-refresh:cache-key-v1")
+        self.assertTrue(record["verifier_result"]["passed"])
+
     def test_workspace_trial_without_verifier_fails_closed(self):
         family = load_case_family(ROOT / "behavior_cases" / "dashboard-filter-refresh" / "family.json")
+        unregistered_variant = replace(family.variants[0], family_id="unregistered-family")
+        unregistered_family = replace(
+            family,
+            family_id="unregistered-family",
+            variants=(unregistered_variant,),
+        )
         condition = ModelCondition(
             provider="deterministic",
             model_id="workspace-no-verifier",
@@ -119,8 +152,8 @@ class WorkspaceRunnerTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             record = run_workspace_trial(
-                family,
-                family.variants[0],
+                unregistered_family,
+                unregistered_variant,
                 condition,
                 adapter,
                 artifacts_root=Path(directory) / "artifacts",
@@ -226,6 +259,7 @@ class WorkspaceRunnerTests(unittest.TestCase):
                 adapter_timeout_seconds=0.01,
             )
             self.assertEqual(record["execution_status"], "adapter_timeout")
+            self.assertTrue(record["infrastructure_censored"])
             self.assertEqual(record["verifier_result"]["status"], "timeout")
             self.assertFalse(record["verifier_result"]["passed"])
             self.assertFalse(verified["called"])

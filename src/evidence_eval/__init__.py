@@ -14,6 +14,7 @@ from .workspace_grader import (
     not_configured_workspace_verifier,
 )
 from .workspace_runner import WorkspaceTools, run_workspace_trial, workspace_tool_contract
+from .workspace_verifiers import registered_workspace_verifier
 
 __all__ = [
     "CaseFamily",
@@ -41,4 +42,5 @@ __all__ = [
     "WorkspaceTools",
     "run_workspace_trial",
     "workspace_tool_contract",
+    "registered_workspace_verifier",
 ]
