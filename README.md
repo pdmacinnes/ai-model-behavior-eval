@@ -29,6 +29,7 @@ $env:PYTHONPATH = 'src'
 python scripts/validate_behavior_cases.py
 python scripts/run_behavior_proof.py
 python scripts/run_unattended_proof.py
+python scripts/build_public_behavior_release.py --cases-root behavior_cases --output-root results/public-release
 python -m unittest discover -s tests -v
 ```
 
@@ -38,4 +39,4 @@ The validation and proof commands are designed to run unattended. The unattended
 
 The public protocol records observable tool use, edits, checkpoints, verifier outcomes, and termination state. It does not request or store private chain-of-thought. Internal traces retain answer-key annotations for analysis, while [public sanitizers](src/evidence_eval/public.py) remove them before release. A model identity is reported exactly as registered, including any mediated agent or model-selection label; results are not generalized to a raw provider model unless that identity is directly established.
 
-The approved design is in [specs/evidence-bounded-debugging-behavior-study.md](specs/evidence-bounded-debugging-behavior-study.md). The current fixtures are dependency-free semantic checks over TypeScript/TSX snapshots, not a full Next.js server. Real model adapters, workspace materialization, and sanitized public release artifacts are subsequent implementation phases.
+The approved design is in [specs/evidence-bounded-debugging-behavior-study.md](specs/evidence-bounded-debugging-behavior-study.md). The current fixtures are dependency-free semantic checks over TypeScript/TSX snapshots, not a full Next.js server. The harness now includes a safe visible-file workspace materializer, but real model adapters and an authoritative workspace verifier remain subsequent implementation phases. The public release builder produces sanitized case packs and run artifacts.

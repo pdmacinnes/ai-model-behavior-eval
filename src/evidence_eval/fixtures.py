@@ -107,7 +107,7 @@ def infer_cause(family: CaseFamily, outcome: FixtureOutcome) -> str | None:
     return None
 
 
-def authoritative_verify(family: CaseFamily, variant: CaseVariant, outcome: FixtureOutcome) -> dict[str, Any]:
+def authoring_postcondition(family: CaseFamily, variant: CaseVariant, outcome: FixtureOutcome) -> dict[str, Any]:
     inferred_cause = infer_cause(family, outcome)
     return {
         "status": "passed" if outcome.passed and inferred_cause is None else "failed",

@@ -7,6 +7,12 @@ from .protocol import EvidenceSession
 from .public import sanitize_public_run, sanitize_public_trace
 from .runner import AgentResult, EvidenceTools, ModelCondition, run_unattended_trial, tool_contract
 from .schema import CaseFamily, CaseVariant, ToolObservation, load_case_family
+from .workspace import MaterializedWorkspace, WorkspaceMaterializationError, materialize_variant
+from .workspace_grader import (
+    WorkspaceVerifierResult,
+    invoke_workspace_verifier,
+    not_configured_workspace_verifier,
+)
 
 __all__ = [
     "CaseFamily",
@@ -25,4 +31,10 @@ __all__ = [
     "tool_contract",
     "load_case_family",
     "validate_case_family",
+    "MaterializedWorkspace",
+    "WorkspaceMaterializationError",
+    "materialize_variant",
+    "WorkspaceVerifierResult",
+    "invoke_workspace_verifier",
+    "not_configured_workspace_verifier",
 ]

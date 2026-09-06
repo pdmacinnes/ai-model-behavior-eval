@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from .fixtures import authoritative_verify, apply_declared_mutation, infer_cause, mutation_steps, run_visible_fixture
+from .fixtures import apply_declared_mutation, authoring_postcondition, infer_cause, mutation_steps, run_visible_fixture
 from .schema import CaseFamily, CaseVariant
 
 
@@ -32,18 +32,18 @@ def _calibrate_variant(family: CaseFamily, variant: CaseVariant) -> dict[str, An
 
     applied: list[dict[str, Any]] = []
     after = None
-    verifier: dict[str, Any] = {"status": "not_run"}
+    authoring_postcondition_result: dict[str, Any] = {"status": "not_run"}
     try:
         mutated_files, applied = apply_declared_mutation(variant)
         after = run_visible_fixture(family, variant, mutated_files)
-        verifier = authoritative_verify(family, variant, after)
+        authoring_postcondition_result = authoring_postcondition(family, variant, after)
     except (KeyError, ValueError) as exc:
         errors.append(f"fixture mutation failed: {exc}")
 
     if after is not None and not after.passed:
         errors.append("visible fixture still fails after the declared mutation")
-    if verifier.get("status") != "passed":
-        errors.append("authoritative verifier did not pass after the declared mutation")
+    if authoring_postcondition_result.get("status") != "passed":
+        errors.append("authoring postcondition did not pass after the declared mutation")
     steps = mutation_steps(variant)
     for index in range(len(steps)):
         try:
@@ -72,11 +72,12 @@ def _calibrate_variant(family: CaseFamily, variant: CaseVariant) -> dict[str, An
         "mutation_proof": {
             "replacement_count": len(applied),
             "replacement_preview_valid": bool(applied) and all(item["changed"] for item in applied),
-            "necessity_checked": True,
+            "necessity_checked": bool(steps),
+            "necessity_method": "leave_one_out" if len(steps) > 1 else "single_step_regression",
             "preserves_surface_signature": mutation.get("preserves_surface_signature"),
             "applied_paths": [item["path"] for item in applied],
         },
-        "authoritative_verifier": verifier,
+        "authoring_postcondition": authoring_postcondition_result,
     }
 
 

@@ -20,6 +20,7 @@ from .schema import CaseFamily, CaseVariant
 
 PROTOCOL_VERSION = "evidence-protocol-v1"
 _CHANNELS: dict[str, EvidenceSession] = {}
+_CHANNEL_LOCK = threading.Lock()
 
 
 def _hash_json(value: Any) -> str:
@@ -76,7 +77,7 @@ class EvidenceTools:
         self.__channel_id = channel_id
 
     def request(self, action: str, target: str) -> ToolResponse:
-        return _CHANNELS[self.__channel_id].request(action, target)
+        return _channel_session(self.__channel_id).request(action, target)
 
     def checkpoint(
         self,
@@ -87,7 +88,7 @@ class EvidenceTools:
         changed_by: str,
         next_action: str,
     ) -> None:
-        _CHANNELS[self.__channel_id].checkpoint(
+        _channel_session(self.__channel_id).checkpoint(
             leading_hypothesis=leading_hypothesis,
             alternative_hypothesis=alternative_hypothesis,
             confidence=confidence,
@@ -96,7 +97,15 @@ class EvidenceTools:
         )
 
     def stop(self, reason: str) -> None:
-        _CHANNELS[self.__channel_id].stop(reason)
+        _channel_session(self.__channel_id).stop(reason)
+
+
+def _channel_session(channel_id: str) -> EvidenceSession:
+    with _CHANNEL_LOCK:
+        session = _CHANNELS.get(channel_id)
+    if session is None:
+        raise RuntimeError("evidence channel is closed")
+    return session
 
 
 def tool_contract(family: CaseFamily) -> dict[str, Any]:
@@ -180,7 +189,8 @@ def run_unattended_trial(
     resolved_run_id = _safe_run_id(run_id or str(uuid.uuid4()))
     session = EvidenceSession(family, variant)
     channel_id = uuid.uuid4().hex
-    _CHANNELS[channel_id] = session
+    with _CHANNEL_LOCK:
+        _CHANNELS[channel_id] = session
     tools = EvidenceTools(channel_id)
     contract = tool_contract(family)
     task: dict[str, Any] = dict(family.initial_context)
@@ -261,8 +271,11 @@ def run_unattended_trial(
         "verifier_result.json": run_record["verifier_result"],
         "behavioral_annotations.json": annotations,
     }
-    write_run_artifacts(artifacts_root / "runs" / resolved_run_id, artifacts)
-    _CHANNELS.pop(channel_id, None)
+    try:
+        write_run_artifacts(artifacts_root / "runs" / resolved_run_id, artifacts)
+    finally:
+        with _CHANNEL_LOCK:
+            _CHANNELS.pop(channel_id, None)
     return run_record | {
         "trace": trace,
         "adapter_result": result.to_dict(),
