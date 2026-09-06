@@ -39,6 +39,7 @@ Each public run entry may contain only:
 - run, batch, condition, family, repetition, and variant-slot identifiers already present in sanitized artifacts;
 - provider, model id, adapter id, and reasoning effort from sanitized condition metadata;
 - execution status, infrastructure-censored state, verifier status, and verifier pass state;
+- `behavior_observation_available`, indicating whether an event trace or behavioral annotation artifact was present;
 - the following behavior fields from `analyze_trace`: action sequence, target sequence, action counts, first action/target, actions before first edit, first edit target, repair attempted, edit count, termination reason, budget exhausted, checkpoint count, leading hypotheses, confidence sequence, rejected action count, and remaining cost.
 
 The report must never emit `variant_id`, hidden causes, verifier declarations, calibration data, reveals or revealed factors, workspace paths, commands, credentials, adapter results, final responses, or arbitrary unknown fields from input artifacts. Internal variant ids are converted to the public `variant_slot` when available and otherwise represented as `redacted`.

@@ -122,7 +122,9 @@ def build_run_narrative(run: dict[str, Any]) -> dict[str, str]:
             label += f" ({_display(target)})"
         action_labels.append(label)
 
-    if action_labels:
+    if run.get("behavior_observation_available") is False:
+        evidence_path = "No behavioral trace or annotation artifact was available for this run."
+    elif action_labels:
         evidence_path = "The run selected " + " -> ".join(action_labels) + "."
     else:
         evidence_path = "The run recorded no accepted tool actions."
@@ -136,7 +138,9 @@ def build_run_narrative(run: dict[str, Any]) -> dict[str, str]:
 
     hypotheses = behavior.get("leading_hypotheses") if isinstance(behavior.get("leading_hypotheses"), list) else []
     confidences = behavior.get("confidence_sequence") if isinstance(behavior.get("confidence_sequence"), list) else []
-    if hypotheses:
+    if run.get("behavior_observation_available") is False:
+        hypothesis_path = "No checkpoint hypothesis was available because behavioral annotations were missing."
+    elif hypotheses:
         hypothesis_path = f"The run recorded {len(hypotheses)} checkpoint(s); the last leading hypothesis was “{_display(hypotheses[-1])}”."
         if confidences:
             hypothesis_path += " Confidence was recorded as " + " -> ".join(_display(item) for item in confidences) + "."
@@ -145,6 +149,8 @@ def build_run_narrative(run: dict[str, Any]) -> dict[str, str]:
 
     if run.get("infrastructure_censored"):
         outcome = "Execution was infrastructure-censored, so behavioral verification was unavailable."
+    elif run.get("behavior_observation_available") is False:
+        outcome = f"Behavioral annotations were unavailable. Verifier status was {_display(run.get('verifier_status'))}."
     else:
         repair = f"attempted a repair with {edit_count} edit(s)" if edit_count else "did not attempt a repair edit"
         termination = _display(behavior.get("termination_reason"), "no explicit termination reason")
@@ -282,6 +288,7 @@ def _run_entry(run_dir: Path, batch_metadata: dict[str, dict[str, Any]]) -> dict
         verifier = {}
 
     behavior = _behavior_from_run(run_dir)
+    behavior_observation_available = (run_dir / "event_trace.json").is_file() or (run_dir / "behavioral_annotations.json").is_file()
     entry: dict[str, Any] = {
         "run_id": run_id,
         "batch_id": trial.get("batch_id"),
@@ -293,6 +300,7 @@ def _run_entry(run_dir: Path, batch_metadata: dict[str, dict[str, Any]]) -> dict
         "infrastructure_censored": trial.get("infrastructure_censored", raw_run.get("infrastructure_censored", False)),
         "verifier_status": verifier.get("status", trial.get("verifier_status")),
         "verifier_passed": verifier.get("passed", trial.get("verifier_passed")),
+        "behavior_observation_available": behavior_observation_available,
         "behavior": behavior,
     }
     entry["narrative"] = build_run_narrative(entry)
@@ -339,6 +347,8 @@ def _build_comparisons(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def _patterns_for_run(run: dict[str, Any]) -> list[str]:
     if run.get("infrastructure_censored"):
         return ["infrastructure_censored"]
+    if run.get("behavior_observation_available") is False:
+        return []
     behavior = run.get("behavior") if isinstance(run.get("behavior"), dict) else {}
     patterns: list[str] = []
     actions = behavior.get("action_sequence") if isinstance(behavior.get("action_sequence"), list) else []

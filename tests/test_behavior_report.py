@@ -161,11 +161,12 @@ class BehavioralReportTests(unittest.TestCase):
             self.assertTrue(entry["infrastructure_censored"])
             self.assertEqual(entry["execution_status"], "adapter_timeout")
             self.assertEqual(entry["verifier_status"], "infrastructure_censored")
+            self.assertFalse(entry["behavior_observation_available"])
             self.assertEqual(report["profiles"][0]["observed_patterns"][0]["pattern"], "infrastructure_censored")
             self.assertFalse(entry["behavior"]["action_sequence"])
             self.assertIsNone(entry["behavior"]["repair_attempted"])
             self.assertIn("infrastructure-censored", entry["narrative"]["outcome"])
-            self.assertIn("no accepted tool actions", entry["narrative"]["evidence_path"])
+            self.assertIn("No behavioral trace", entry["narrative"]["evidence_path"])
 
     def test_public_release_input_and_annotation_fallback(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -206,6 +207,22 @@ class BehavioralReportTests(unittest.TestCase):
             self.assertIn("no checkpoint hypothesis", report["runs"][0]["narrative"]["hypothesis_path"])
             self.assertNotIn("unknown_field", json.dumps(report))
             self.assertNotIn("revealed_factors", json.dumps(report))
+
+    def test_missing_behavior_artifacts_are_not_classified_as_no_action(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run_id = "batch-a-condition-a-dashboard-filter-refresh-v1-r1"
+            _write_json(root / "batches" / "batch-a" / "manifest.json", _manifest([(run_id, 1)]))
+            run_root = root / "runs" / run_id
+            _run(run_root, run_id, "query-omitted")
+            (run_root / "event_trace.json").unlink()
+
+            report = build_behavior_report(root, source_kind="internal_artifacts")
+
+            entry = report["runs"][0]
+            self.assertFalse(entry["behavior_observation_available"])
+            self.assertEqual(report["profiles"][0]["observed_patterns"], [])
+            self.assertIn("annotations were unavailable", entry["narrative"]["outcome"])
 
     def test_malformed_optional_artifact_fails_closed(self):
         with tempfile.TemporaryDirectory() as directory:
