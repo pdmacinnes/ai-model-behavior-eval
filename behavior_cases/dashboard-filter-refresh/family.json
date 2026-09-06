@@ -6,6 +6,7 @@
     "initial_observation": "Client navigation succeeds and a full refresh shows the requested range. The symptom alone is consistent with query propagation, stale client props, or caching."
   },
   "allowed_actions": [
+    "list_files",
     "inspect",
     "search",
     "trace",
@@ -13,13 +14,14 @@
     "edit"
   ],
   "action_costs": {
+    "list_files": 0,
     "inspect": 1,
     "search": 1,
     "trace": 2,
     "run_test": 2,
     "edit": 3
   },
-  "max_cost": 5,
+  "max_cost": 10,
   "perturbations": [
     {
       "type": "counterfactual",

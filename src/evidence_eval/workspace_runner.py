@@ -36,6 +36,11 @@ def _hash_json(value: Any) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+def _is_link(path: Path) -> bool:
+    is_junction = getattr(path, "is_junction", None)
+    return path.is_symlink() or bool(is_junction and is_junction())
+
+
 def _safe_run_id(value: str) -> str:
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", value):
         raise ValueError("run_id must contain only letters, numbers, underscore, period, or hyphen")
@@ -150,6 +155,25 @@ class _WorkspaceSession:
             return "", "tool output bound exceeded"
         return content, None
 
+    def _list_files(self, target: str) -> tuple[str, str | None]:
+        if target != ".":
+            return "", "list_files target must be '.'"
+        paths: list[str] = []
+        for path in sorted(self.workspace.rglob("*")):
+            if not path.is_file() or _is_link(path):
+                continue
+            relative = path.relative_to(self.workspace).as_posix()
+            try:
+                visible = resolve_workspace_path(self.workspace, relative)
+            except ValueError:
+                continue
+            if visible.is_file():
+                paths.append(relative)
+        content = "\n".join(paths)
+        if len(content) > self.family.max_response_chars:
+            return "", "tool output bound exceeded"
+        return content, None
+
     def request(self, action: str, target: str) -> ToolResponse:
         if action == "edit":
             return self._reject(action, target, self.family.action_costs.get(action, 0), "use edit_file for workspace edits")
@@ -161,6 +185,8 @@ class _WorkspaceSession:
             content, error = self._inspect(target)
         elif action == "search":
             content, error = self._search(target)
+        elif action == "list_files":
+            content, error = self._list_files(target)
         elif action in {"trace", "run_test"}:
             observation = self.variant.observation_for(action, target)
             if observation is None:
@@ -293,7 +319,7 @@ def workspace_tool_contract(family: CaseFamily) -> dict[str, Any]:
             {
                 "type": "function",
                 "name": "request_evidence",
-                "description": "Inspect, search, trace, or run one bounded local evidence action.",
+                "description": "Inspect, search, trace, run one bounded local evidence action, or list visible workspace files.",
                 "parameters": {
                     "type": "object",
                     "properties": {

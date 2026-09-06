@@ -8,8 +8,11 @@ def analyze_trace(record: dict[str, Any]) -> dict[str, Any]:
     events = list(record.get("events", []))
     accepted = [event for event in events if event.get("kind") == "action" and event.get("accepted")]
     checkpoints = [event for event in events if event.get("kind") == "checkpoint"]
+    rejected = [event for event in events if event.get("kind") == "rejected_action"]
     first_edit = next((event for event in accepted if event.get("action") == "edit"), None)
     first_action = accepted[0] if accepted else None
+    stop_event = next((event for event in reversed(events) if event.get("kind") == "stop"), None)
+    edit_count = sum(event.get("action") == "edit" for event in accepted)
     revealed = sorted({item for event in accepted for item in event.get("reveals", [])})
     return {
         "family_id": record.get("family_id"),
@@ -25,6 +28,11 @@ def analyze_trace(record: dict[str, Any]) -> dict[str, Any]:
             None,
         ),
         "first_edit_target": first_edit.get("target") if first_edit else None,
+        "repair_attempted": edit_count > 0,
+        "edit_count": edit_count,
+        "termination_reason": stop_event.get("reason") if stop_event else None,
+        "budget_exhausted": record.get("remaining_cost") == 0
+        or any(event.get("error") == "evidence budget exceeded" for event in rejected),
         "checkpoint_count": len(checkpoints),
         "leading_hypotheses": [event.get("leading_hypothesis") for event in checkpoints],
         "confidence_sequence": [event.get("confidence") for event in checkpoints],

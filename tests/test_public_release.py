@@ -42,7 +42,16 @@ class PublicReleaseTests(unittest.TestCase):
                 encoding="utf-8",
             )
             (artifacts / "behavioral_annotations.json").write_text(
-                json.dumps({"revealed_factors": ["secret"], "first_action": "trace"}),
+                json.dumps(
+                    {
+                        "revealed_factors": ["secret"],
+                        "first_action": "trace",
+                        "repair_attempted": False,
+                        "edit_count": 0,
+                        "termination_reason": "evidence collected",
+                        "budget_exhausted": False,
+                    }
+                ),
                 encoding="utf-8",
             )
             (artifacts / "adapter_result.json").write_text(
@@ -62,6 +71,10 @@ class PublicReleaseTests(unittest.TestCase):
             self.assertTrue((output / "batches" / "batch-1" / "manifest.json").exists())
             public_annotations = json.loads((output / "runs" / "run-1" / "behavioral_annotations.json").read_text(encoding="utf-8"))
             self.assertNotIn("revealed_factors", public_annotations)
+            self.assertFalse(public_annotations["repair_attempted"])
+            self.assertEqual(public_annotations["edit_count"], 0)
+            self.assertEqual(public_annotations["termination_reason"], "evidence collected")
+            self.assertFalse(public_annotations["budget_exhausted"])
             public_trace = json.loads((output / "runs" / "run-1" / "event_trace.json").read_text(encoding="utf-8"))
             self.assertNotIn("reveals", public_trace["events"][0])
             public_run = json.loads((output / "runs" / "run-1" / "run.json").read_text(encoding="utf-8"))

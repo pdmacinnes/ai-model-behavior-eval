@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 from evidence_eval.analysis import analyze_trace, compare_variants
@@ -56,6 +57,22 @@ class BehaviorProtocolTests(unittest.TestCase):
         self.assertFalse(comparison["behavior_changed"])
         self.assertTrue(comparison["environment_changed"])
         self.assertIn("revealed_factors", comparison["environment_changed_fields"])
+        self.assertFalse(observations[0]["repair_attempted"])
+        self.assertEqual(observations[0]["edit_count"], 0)
+        self.assertEqual(observations[0]["termination_reason"], "diagnosis localized")
+        self.assertFalse(observations[0]["budget_exhausted"])
+
+    def test_budget_exhaustion_is_distinct_from_infrastructure_censorship(self):
+        family = load_case_family(ROOT / "behavior_cases" / "dashboard-filter-refresh" / "family.json")
+        bounded_family = replace(family, max_cost=1)
+        session = EvidenceSession(bounded_family, bounded_family.variants[0])
+        rejected = session.request("trace", "metrics-request")
+        self.assertFalse(rejected.accepted)
+        session.stop("insufficient budget")
+        annotations = analyze_trace(session.to_record())
+        self.assertTrue(annotations["budget_exhausted"])
+        self.assertFalse(annotations["repair_attempted"])
+        self.assertEqual(annotations["termination_reason"], "insufficient budget")
 
     def test_checkpoint_rejects_invalid_confidence(self):
         family = load_case_family(ROOT / "behavior_cases" / "dashboard-filter-refresh" / "family.json")

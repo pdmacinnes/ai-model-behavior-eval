@@ -52,10 +52,20 @@ class EvidenceSession:
             return self._reject(action, target, 0, "unsupported action")
         if cost > self.remaining_cost:
             return self._reject(action, target, cost, "evidence budget exceeded")
-        observation = self.variant.observation_for(action, target)
-        if observation is None:
-            return self._reject(action, target, cost, "unsupported target for this case")
-        if len(observation.content) > self.family.max_response_chars:
+        if action == "list_files":
+            if target != ".":
+                return self._reject(action, target, cost, "list_files target must be '.'")
+            content = "\n".join(sorted(self.variant.files))
+            reveals: tuple[str, ...] = ()
+        else:
+            observation = self.variant.observation_for(action, target)
+            if observation is None:
+                return self._reject(action, target, cost, "unsupported target for this case")
+            if len(observation.content) > self.family.max_response_chars:
+                return self._reject(action, target, cost, "tool output bound exceeded")
+            content = observation.content
+            reveals = observation.reveals
+        if len(content) > self.family.max_response_chars:
             return self._reject(action, target, cost, "tool output bound exceeded")
         if len(self.events) >= self.family.max_events:
             self.status = "event_limit"
@@ -65,11 +75,11 @@ class EvidenceSession:
             accepted=True,
             action=action,
             target=target,
-            content=observation.content,
+            content=content,
             cost=cost,
             remaining_cost=self.remaining_cost,
         )
-        self.events.append({"kind": "action", **response.to_dict(), "reveals": list(observation.reveals)})
+        self.events.append({"kind": "action", **response.to_dict(), "reveals": list(reveals)})
         return response
 
     def checkpoint(
