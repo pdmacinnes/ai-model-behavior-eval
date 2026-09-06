@@ -124,7 +124,8 @@ class BehavioralReportTests(unittest.TestCase):
             report = build_behavior_report(root, source_kind="internal_artifacts")
 
             self.assertEqual(report["source"]["run_count"], 2)
-            self.assertEqual([run["run_id"] for run in report["runs"]], [run_one, run_two])
+            self.assertEqual(len({run["run_id"] for run in report["runs"]}), 2)
+            self.assertTrue(all(run["run_id"].startswith("pub-") for run in report["runs"]))
             self.assertEqual(len(report["profiles"]), 1)
             profile = report["profiles"][0]
             self.assertEqual(profile["run_count"], 2)
@@ -136,12 +137,13 @@ class BehavioralReportTests(unittest.TestCase):
             self.assertEqual(len(report["case_narratives"]), 1)
             case_narrative = report["case_narratives"][0]
             self.assertEqual(case_narrative["behavior_changed_comparison_count"], 1)
-            self.assertIn("observable behavior changed", case_narrative["narrative"])
+            self.assertIn("decision-path behavior changed", case_narrative["narrative"])
             self.assertIn("pre-registered", case_narrative["narrative"])
             comparison = report["comparisons"][0]
-            self.assertEqual(comparison["first_variant_slot"], 1)
-            self.assertEqual(comparison["second_variant_slot"], 2)
-            self.assertTrue(comparison["behavior_changed"])
+            self.assertRegex(comparison["pair_id"], r"^pair-[0-9a-f]{24}$")
+            self.assertEqual(len(comparison["run_ids"]), 2)
+            self.assertTrue(all(run_id.startswith("pub-") for run_id in comparison["run_ids"]))
+            self.assertTrue(comparison["decision_behavior_changed"])
             self.assertTrue(comparison["comparison_is_causal_only_if_pre_registered"])
             self.assertEqual(report["runs"][0]["behavior"]["first_action"], "search")
             self.assertIn("The run selected", report["runs"][0]["narrative"]["summary"])
@@ -175,6 +177,78 @@ class BehavioralReportTests(unittest.TestCase):
             self.assertIn("infrastructure-censored", entry["narrative"]["outcome"])
             self.assertIn("No behavioral trace", entry["narrative"]["evidence_path"])
 
+    def test_censored_partial_trace_is_not_reported_as_complete_episode(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run_id = "batch-a-condition-a-dashboard-filter-refresh-v1-r1"
+            _write_json(root / "batches" / "batch-a" / "manifest.json", _manifest([(run_id, 1)]))
+            run_root = root / "runs" / run_id
+            _run(run_root, run_id, "query-omitted", censored=True)
+            _write_json(
+                run_root / "event_trace.json",
+                {
+                    "events": [
+                        {
+                            "kind": "action",
+                            "action": "inspect",
+                            "target": "dashboard",
+                            "accepted": True,
+                            "content": "partial workspace source",
+                        }
+                    ]
+                },
+            )
+
+            report = build_behavior_report(root, source_kind="internal_artifacts")
+
+            entry = report["runs"][0]
+            self.assertEqual(entry["behavior_observation_status"], "partial")
+            self.assertIn("partial behavioral trace", entry["narrative"]["evidence_path"])
+            self.assertIn("interrupted", entry["narrative"]["outcome"])
+            self.assertNotIn("Verifier status", entry["narrative"]["outcome"])
+            self.assertEqual(report["comparisons"], [])
+
+    def test_operational_only_changes_do_not_claim_decision_behavior_changed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run_one = "batch-a-condition-a-dashboard-filter-refresh-v1-r1"
+            run_two = "batch-a-condition-a-dashboard-filter-refresh-v2-r1"
+            _write_json(root / "batches" / "batch-a" / "manifest.json", _manifest([(run_one, 1), (run_two, 2)]))
+            for run_id, confidence, remaining_cost in ((run_one, 0.4, 3), (run_two, 0.8, 2)):
+                run_root = root / "runs" / run_id
+                _run(run_root, run_id, "query-omitted")
+                (run_root / "event_trace.json").unlink()
+                _write_json(
+                    run_root / "behavioral_annotations.json",
+                    {
+                        "action_sequence": ["inspect"],
+                        "target_sequence": ["dashboard"],
+                        "action_counts": {"inspect": 1},
+                        "first_action": "inspect",
+                        "first_target": "dashboard",
+                        "actions_before_first_edit": 1,
+                        "first_edit_target": None,
+                        "repair_attempted": False,
+                        "edit_count": 0,
+                        "termination_reason": "evidence collected",
+                        "budget_exhausted": False,
+                        "checkpoint_count": 1,
+                        "leading_hypotheses": ["same hypothesis"],
+                        "confidence_sequence": [confidence],
+                        "rejected_action_count": 0,
+                        "remaining_cost": remaining_cost,
+                    },
+                )
+
+            report = build_behavior_report(root, source_kind="internal_artifacts")
+
+            comparison = report["comparisons"][0]
+            self.assertFalse(comparison["decision_behavior_changed"])
+            self.assertTrue(comparison["operational_metadata_changed"])
+            self.assertIn("confidence_sequence", comparison["changed_operational_fields"])
+            self.assertIn("Operational metadata changed", report["case_narratives"][0]["narrative"])
+            self.assertNotIn("decision-path behavior changed", report["case_narratives"][0]["narrative"])
+
     def test_censored_variants_are_not_compared_as_behavior(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -193,8 +267,12 @@ class BehavioralReportTests(unittest.TestCase):
     def test_public_release_input_and_annotation_fallback(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            run_id = "public-condition-dashboard-filter-refresh-v1-r1"
-            _write_json(root / "batches" / "public-batch" / "manifest.json", _manifest([(run_id, 1)]))
+            run_id = "pub-0123456789abcdef01234567"
+            public_batch = _manifest([(run_id, 1)])
+            for entry in public_batch["planned_trials"] + public_batch["results"]:
+                entry.pop("variant_slot", None)
+                entry["pair_id"] = "pair-abcdef0123456789abcdef01"
+            _write_json(root / "batches" / "public-batch" / "manifest.json", public_batch)
             run_root = root / "runs" / run_id
             _write_json(
                 run_root / "run.json",
@@ -204,14 +282,12 @@ class BehavioralReportTests(unittest.TestCase):
                     "registration_id": "condition-a",
                     "execution_status": "completed",
                     "infrastructure_censored": False,
-                    "variant_id": "redacted",
                     "verifier_result": {"status": "failed"},
                 },
             )
             _write_json(
                 run_root / "behavioral_annotations.json",
                 {
-                    "variant_id": "redacted",
                     "action_sequence": ["inspect"],
                     "first_action": "inspect",
                     "repair_attempted": False,

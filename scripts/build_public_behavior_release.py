@@ -5,7 +5,14 @@ import json
 from pathlib import Path
 from typing import Any
 
-from evidence_eval.public import PUBLIC_EXCLUDED_ARTIFACTS, sanitize_public_artifact, sanitize_public_case_family
+from evidence_eval.public import (
+    PUBLIC_EXCLUDED_ARTIFACTS,
+    derive_public_pair_id,
+    derive_public_run_id,
+    sanitize_public_artifact,
+    sanitize_public_batch_manifest,
+    sanitize_public_case_family,
+)
 
 
 PUBLIC_REGISTRATION_SCHEMA = "evidence-bounded-debugging-public-registration-v1"
@@ -70,39 +77,98 @@ def build(cases_root: Path, output_root: Path, artifacts_root: Path | None = Non
     batch_count = 0
     registration_count = 0
     if artifacts_root is not None and artifacts_root.exists():
-        for batch_dir in sorted(path for path in (artifacts_root / "batches").glob("*") if path.is_dir()):
+        batch_sources = sorted(path for path in (artifacts_root / "batches").glob("*") if path.is_dir())
+        trial_mappings: dict[str, dict[str, Any]] = {}
+        manifest_values: dict[Path, dict[str, Any]] = {}
+        for batch_dir in batch_sources:
             source = batch_dir / "manifest.json"
             if not source.is_file():
                 continue
-            sanitized = sanitize_public_artifact("manifest.json", _read_json(source))
+            raw_manifest = _read_json(source)
+            if not isinstance(raw_manifest, dict):
+                raise ValueError(f"batch manifest must be an object: {source}")
+            batch_id = raw_manifest.get("batch_id", batch_dir.name)
+            if not isinstance(batch_id, str):
+                raise ValueError(f"batch manifest has an invalid batch id: {source}")
+            for trial in raw_manifest.get("planned_trials", []):
+                if not isinstance(trial, dict) or not isinstance(trial.get("run_id"), str):
+                    raise ValueError(f"batch has an invalid planned trial: {source}")
+                condition_id = trial.get("condition_id")
+                family_id = trial.get("family_id")
+                repetition = trial.get("repetition")
+                if not isinstance(condition_id, str) or not isinstance(family_id, str) or not isinstance(repetition, int):
+                    raise ValueError(f"planned trial lacks pairing metadata: {source}")
+                internal_id = trial["run_id"]
+                if internal_id in trial_mappings:
+                    raise ValueError(f"duplicate internal run id across batches: {internal_id}")
+                trial_mappings[internal_id] = {
+                    "public_run_id": derive_public_run_id(batch_id, internal_id),
+                    "pair_id": derive_public_pair_id(batch_id, condition_id, family_id, repetition),
+                    "batch_id": batch_id,
+                    "repetition": repetition,
+                }
+            manifest_values[batch_dir] = raw_manifest
+
+        for batch_dir in batch_sources:
+            raw_manifest = manifest_values.get(batch_dir)
+            if raw_manifest is None:
+                continue
+            batch_id = raw_manifest.get("batch_id", batch_dir.name)
+            sanitized = sanitize_public_batch_manifest(raw_manifest, trial_mappings)
             destination = output_root / "batches" / batch_dir.name / "manifest.json"
             destination.parent.mkdir(parents=True, exist_ok=True)
             destination.write_text(json.dumps(sanitized, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
-            batch_id = sanitized.get("batch_id", batch_dir.name)
             registration = _public_registration_projection(sanitized, batch_id)
             registration_path = output_root / "batches" / batch_dir.name / "registration.json"
             registration_path.write_text(json.dumps(registration, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
             batch_count += 1
             registration_count += 1
         for run_dir in sorted(path for path in artifacts_root.glob("runs/*") if path.is_dir()):
+            raw_run_path = run_dir / "run.json"
+            if not raw_run_path.is_file():
+                raise ValueError(f"run directory lacks run.json: {run_dir}")
+            raw_run = _read_json(raw_run_path)
+            if not isinstance(raw_run, dict) or not isinstance(raw_run.get("run_id"), str):
+                raise ValueError(f"run.json lacks a string run_id: {raw_run_path}")
+            internal_run_id = raw_run["run_id"]
+            info = trial_mappings.get(internal_run_id)
+            if info is None:
+                raise ValueError(f"run is not registered in a batch manifest: {internal_run_id}")
+            destination_run = output_root / "runs" / info["public_run_id"]
             for source in sorted(run_dir.glob("*.json")):
                 if source.name in PUBLIC_EXCLUDED_ARTIFACTS:
                     continue
                 sanitized = sanitize_public_artifact(source.name, _read_json(source))
-                destination = output_root / "runs" / run_dir.name / source.name
+                if source.name == "run.json" and isinstance(sanitized, dict):
+                    sanitized["run_id"] = info["public_run_id"]
+                    sanitized["pair_id"] = info["pair_id"]
+                    sanitized["repetition"] = info["repetition"]
+                    sanitized["batch_id"] = info["batch_id"]
+                destination = destination_run / source.name
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 destination.write_text(json.dumps(sanitized, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
             run_count += 1
 
     manifest = {
-        "schema": "evidence-bounded-debugging-public-release-v1",
-        "sanitizer_version": "2",
+        "schema": "evidence-bounded-debugging-public-release-v2",
+        "sanitizer_version": "3",
         "case_count": case_count,
         "run_count": run_count,
         "batch_count": batch_count,
         "registration_count": registration_count,
         "excluded_artifacts": list(PUBLIC_EXCLUDED_ARTIFACTS),
-        "answer_key_fields_removed": ["hidden_cause", "verifier", "calibration", "reveals", "revealed_factors"],
+        "answer_key_fields_removed": [
+            "hidden_cause",
+            "verifier",
+            "calibration",
+            "reveals",
+            "revealed_factors",
+            "variant_id",
+            "variant_slot",
+            "fixture_files",
+            "observation_content",
+            "cause_named_hypotheses",
+        ],
         "entrypoints": {
             "report_builder": "scripts/build_behavioral_report.py",
             "analysis": "src/evidence_eval/analysis.py",
@@ -116,7 +182,7 @@ def build(cases_root: Path, output_root: Path, artifacts_root: Path | None = Non
 
 This directory contains sanitized case definitions, public registration projections, batch manifests, derived run traces, and behavioral annotations for the evidence-bounded debugging study.
 
-Raw adapter results and final provider responses are intentionally excluded. Hidden causes, verifier declarations, calibration data, variant identifiers, credentials, machine-local paths, and commands are not part of the public release.
+Raw adapter results and final provider responses are intentionally excluded. Fixture source bodies, cause-discriminating observation prose, predefined cause-named hypotheses, hidden causes, verifier declarations, calibration data, variant identifiers, variant slots, credentials, machine-local paths, and commands are not part of the public release. Model-authored checkpoint text is retained as behavioral evidence and may still paraphrase a cause.
 
 To rebuild this release from the repository root:
 

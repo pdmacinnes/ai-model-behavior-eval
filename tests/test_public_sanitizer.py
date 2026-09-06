@@ -15,11 +15,13 @@ class PublicSanitizerTests(unittest.TestCase):
     def test_trace_sanitizer_removes_answer_key_annotations(self):
         trace = {
             "variant_id": "cache-key-static",
-            "events": [{"kind": "action", "reveals": ["cache key behavior"], "content": "evidence"}],
+            "events": [{"kind": "action", "reveals": ["cache key behavior"], "content": "workspace source"}],
         }
         sanitized = sanitize_public_trace(trace)
-        self.assertEqual(sanitized["variant_id"], "redacted")
+        self.assertNotIn("variant_id", sanitized)
         self.assertNotIn("reveals", sanitized["events"][0])
+        self.assertNotIn("content", sanitized["events"][0])
+        self.assertEqual(sanitized["events"][0]["content_chars"], len("workspace source"))
 
     def test_annotations_artifact_sanitizer_removes_top_level_answer_keys(self):
         annotations = {"revealed_factors": ["query propagation"], "first_action": "trace"}
@@ -35,14 +37,37 @@ class PublicSanitizerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "forbidden field"):
             validate_public_batch_manifest({"schema": "evidence-bounded-debugging-batch-v1", "command": ["worker"]})
 
+    def test_batch_manifest_gate_rejects_variant_slots_and_raw_run_ids(self):
+        with self.assertRaisesRegex(ValueError, "forbidden field"):
+            validate_public_batch_manifest({"planned_trials": [{"variant_slot": 1}]})
+        with self.assertRaisesRegex(ValueError, "non-opaque run id"):
+            validate_public_batch_manifest({"planned_trials": [{"run_id": "internal-v1-r1"}]})
+
     def test_run_sanitizer_removes_verifier_declaration(self):
         run = {
             "variant_id": "query-omitted",
-            "verifier_result": {"status": "declarative_only", "declaration": {"expected_cause": "query propagation"}},
+            "verifier_result": {
+                "status": "declarative_only",
+                "passed": False,
+                "declaration": {"expected_cause": "query propagation"},
+            },
         }
         sanitized = sanitize_public_run(run)
-        self.assertEqual(sanitized["variant_id"], "redacted")
-        self.assertEqual(sanitized["verifier_result"], {"status": "declarative_only"})
+        self.assertNotIn("variant_id", sanitized)
+        self.assertEqual(sanitized["verifier_result"], {"status": "declarative_only", "passed": False})
+
+    def test_verifier_artifact_keeps_only_status_and_passed(self):
+        sanitized = sanitize_public_artifact(
+            "verifier_result.json",
+            {
+                "verifier_id": "dashboard-filter-refresh:query-omitted-v1",
+                "status": "failed",
+                "passed": False,
+                "checks": {"page_passes_selected_range": False},
+                "regressions": ["query omitted"],
+            },
+        )
+        self.assertEqual(sanitized, {"status": "failed", "passed": False})
 
     def test_case_sanitizer_removes_answer_key_fields(self):
         case = {
@@ -57,12 +82,11 @@ class PublicSanitizerTests(unittest.TestCase):
             }],
         }
         sanitized = sanitize_public_case_family(case)
-        variant = sanitized["variants"][0]
-        self.assertEqual(variant["variant_id"], "variant-1")
-        self.assertNotIn("hidden_cause", variant)
-        self.assertNotIn("verifier", variant)
-        self.assertNotIn("calibration", variant)
-        self.assertNotIn("reveals", variant["observations"][0])
+        self.assertEqual(sanitized["variant_count"], 1)
+        self.assertNotIn("variants", sanitized)
+        self.assertNotIn("files", sanitized)
+        self.assertNotIn("hypotheses", sanitized)
+        self.assertNotIn("observations", sanitized)
         self.assertEqual(sanitized["perturbations"], [{"type": "counterfactual"}])
 
 

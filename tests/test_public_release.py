@@ -30,15 +30,69 @@ class PublicReleaseTests(unittest.TestCase):
             batch = root / "artifacts" / "batches" / "batch-1"
             batch.mkdir(parents=True)
             (batch / "manifest.json").write_text(
-                json.dumps({"schema": "evidence-bounded-debugging-batch-v1", "batch_id": "batch-1"}),
+                json.dumps(
+                    {
+                        "schema": "evidence-bounded-debugging-batch-v1",
+                        "batch_id": "batch-1",
+                        "conditions": [
+                            {
+                                "condition_id": "condition-a",
+                                "provider": "provider-a",
+                                "model_id": "model-a",
+                                "adapter_id": "jsonl-provider-worker",
+                            }
+                        ],
+                        "planned_trials": [
+                            {
+                                "run_id": "internal-run-1",
+                                "condition_id": "condition-a",
+                                "family_id": "dashboard-filter-refresh",
+                                "model_id": "model-a",
+                                "provider": "provider-a",
+                                "adapter_id": "jsonl-provider-worker",
+                                "repetition": 1,
+                                "variant_slot": 1,
+                            }
+                        ],
+                        "results": [
+                            {
+                                "run_id": "internal-run-1",
+                                "condition_id": "condition-a",
+                                "family_id": "dashboard-filter-refresh",
+                                "repetition": 1,
+                                "variant_slot": 1,
+                                "execution_status": "completed",
+                                "infrastructure_censored": False,
+                                "verifier_status": "failed",
+                                "verifier_passed": False,
+                            }
+                        ],
+                    }
+                ),
                 encoding="utf-8",
             )
             (artifacts / "run.json").write_text(
-                json.dumps({"variant_id": "secret", "verifier_result": {"status": "declarative_only", "declaration": {"expected_cause": "secret"}}}),
+                json.dumps(
+                    {
+                        "run_id": "internal-run-1",
+                        "family_id": "dashboard-filter-refresh",
+                        "variant_id": "secret",
+                        "verifier_result": {
+                            "status": "declarative_only",
+                            "passed": False,
+                            "declaration": {"expected_cause": "secret"},
+                        },
+                    }
+                ),
                 encoding="utf-8",
             )
             (artifacts / "event_trace.json").write_text(
-                json.dumps({"variant_id": "secret", "events": [{"reveals": ["secret"]}]}),
+                json.dumps(
+                    {
+                        "variant_id": "secret",
+                        "events": [{"reveals": ["secret"], "content": "workspace source"}],
+                    }
+                ),
                 encoding="utf-8",
             )
             (artifacts / "behavioral_annotations.json").write_text(
@@ -68,9 +122,14 @@ class PublicReleaseTests(unittest.TestCase):
             self.assertIn("adapter_result.json", manifest["excluded_artifacts"])
             self.assertEqual(manifest["registration_count"], 1)
             self.assertIn("report_builder", manifest["entrypoints"])
-            self.assertFalse((output / "runs" / "run-1" / "adapter_result.json").exists())
-            self.assertFalse((output / "runs" / "run-1" / "final_response.txt").exists())
+            public_run_dir = next((output / "runs").iterdir())
+            self.assertRegex(public_run_dir.name, r"^pub-[0-9a-f]{24}$")
+            self.assertFalse((public_run_dir / "adapter_result.json").exists())
+            self.assertFalse((public_run_dir / "final_response.txt").exists())
             self.assertTrue((output / "batches" / "batch-1" / "manifest.json").exists())
+            public_manifest = json.loads((output / "batches" / "batch-1" / "manifest.json").read_text(encoding="utf-8"))
+            self.assertNotIn("variant_slot", json.dumps(public_manifest))
+            self.assertIn("pair_id", json.dumps(public_manifest))
             public_registration = json.loads((output / "batches" / "batch-1" / "registration.json").read_text(encoding="utf-8"))
             self.assertEqual(public_registration["schema"], "evidence-bounded-debugging-public-registration-v1")
             self.assertNotIn("command", json.dumps(public_registration))
@@ -78,19 +137,24 @@ class PublicReleaseTests(unittest.TestCase):
             self.assertNotIn("variant_id", json.dumps(public_registration))
             self.assertTrue((output / "README.md").exists())
             self.assertNotIn(str(root), (output / "README.md").read_text(encoding="utf-8"))
-            public_annotations = json.loads((output / "runs" / "run-1" / "behavioral_annotations.json").read_text(encoding="utf-8"))
+            public_annotations = json.loads((public_run_dir / "behavioral_annotations.json").read_text(encoding="utf-8"))
             self.assertNotIn("revealed_factors", public_annotations)
             self.assertFalse(public_annotations["repair_attempted"])
             self.assertEqual(public_annotations["edit_count"], 0)
             self.assertEqual(public_annotations["termination_reason"], "evidence collected")
             self.assertFalse(public_annotations["budget_exhausted"])
-            public_trace = json.loads((output / "runs" / "run-1" / "event_trace.json").read_text(encoding="utf-8"))
+            public_trace = json.loads((public_run_dir / "event_trace.json").read_text(encoding="utf-8"))
             self.assertNotIn("reveals", public_trace["events"][0])
-            public_run = json.loads((output / "runs" / "run-1" / "run.json").read_text(encoding="utf-8"))
+            self.assertNotIn("content", public_trace["events"][0])
+            public_run = json.loads((public_run_dir / "run.json").read_text(encoding="utf-8"))
+            self.assertRegex(public_run["run_id"], r"^pub-[0-9a-f]{24}$")
+            self.assertRegex(public_run["pair_id"], r"^pair-[0-9a-f]{24}$")
             self.assertNotIn("declaration", public_run["verifier_result"])
+            self.assertFalse(public_run["verifier_result"]["passed"])
             public_case = json.loads((output / "cases" / "dashboard-filter-refresh" / "family.json").read_text(encoding="utf-8"))
-            self.assertNotIn("hidden_cause", public_case["variants"][0])
-            self.assertNotIn("reveals", public_case["variants"][0]["observations"][0])
+            self.assertEqual(public_case["variant_count"], 2)
+            self.assertNotIn("variants", public_case)
+            self.assertNotIn('"files"', json.dumps(public_case))
 
 
 if __name__ == "__main__":

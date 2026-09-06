@@ -13,6 +13,7 @@ def main() -> int:
     sources.add_argument("--artifacts-root", type=Path)
     sources.add_argument("--public-root", type=Path)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--verbose", action="store_true", help="print the complete report after writing it")
     args = parser.parse_args()
 
     source_root = args.public_root or args.artifacts_root
@@ -20,7 +21,21 @@ def main() -> int:
     report = build_behavior_report(source_root, source_kind=source_kind)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
-    print(json.dumps(report, indent=2, sort_keys=True))
+    if args.verbose:
+        print(json.dumps(report, indent=2, sort_keys=True))
+    else:
+        censored_count = sum(1 for run in report["runs"] if run.get("infrastructure_censored") is True)
+        print(
+            "source_kind={source_kind} runs={runs} profiles={profiles} comparisons={comparisons} "
+            "censored={censored} output={output}".format(
+                source_kind=source_kind,
+                runs=len(report["runs"]),
+                profiles=len(report["profiles"]),
+                comparisons=len(report["comparisons"]),
+                censored=censored_count,
+                output=args.output,
+            )
+        )
     return 0
 
 

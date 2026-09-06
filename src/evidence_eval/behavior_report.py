@@ -7,10 +7,10 @@ import re
 from typing import Any
 
 from .analysis import analyze_trace
-from .public import validate_public_batch_manifest
+from .public import derive_public_pair_id, derive_public_run_id, validate_public_batch_manifest
 
 
-BEHAVIOR_REPORT_SCHEMA = "evidence-bounded-debugging-behavior-report-v1"
+BEHAVIOR_REPORT_SCHEMA = "evidence-bounded-debugging-behavior-report-v2"
 _BEHAVIOR_FIELDS = (
     "action_sequence",
     "target_sequence",
@@ -29,9 +29,28 @@ _BEHAVIOR_FIELDS = (
     "rejected_action_count",
     "remaining_cost",
 )
+_DECISION_BEHAVIOR_FIELDS = (
+    "action_sequence",
+    "target_sequence",
+    "action_counts",
+    "first_action",
+    "first_target",
+    "actions_before_first_edit",
+    "first_edit_target",
+    "repair_attempted",
+    "edit_count",
+    "termination_reason",
+    "checkpoint_count",
+    "leading_hypotheses",
+)
+_OPERATIONAL_FIELDS = (
+    "confidence_sequence",
+    "rejected_action_count",
+    "remaining_cost",
+    "budget_exhausted",
+)
 _LOCAL_PATH_PATTERN = re.compile(r"(?:[A-Za-z]:\\[^\s\"']+|/(?:Users|home|workspace)/[^\s\"']+)")
 _SECRET_PATTERN = re.compile(r"\b(?:sk|rk|sess)-[A-Za-z0-9_-]{8,}\b|\bBearer\s+[A-Za-z0-9._-]{8,}", re.IGNORECASE)
-_RUN_ID_VARIANT_PATTERN = re.compile(r"-v(?P<variant>\d+)-r(?P<repetition>\d+)$")
 _FIRST_ACTION_PATTERNS = {
     "list_files": "evidence_first_list_files",
     "inspect": "evidence_first_inspect",
@@ -112,6 +131,7 @@ def _display(value: Any, fallback: str = "not recorded") -> str:
 def build_run_narrative(run: dict[str, Any]) -> dict[str, str]:
     """Describe one public report entry without adding new behavioral claims."""
     behavior = run.get("behavior") if isinstance(run.get("behavior"), dict) else _empty_behavior()
+    observation_status = run.get("behavior_observation_status")
     actions = behavior.get("action_sequence") if isinstance(behavior.get("action_sequence"), list) else []
     targets = behavior.get("target_sequence") if isinstance(behavior.get("target_sequence"), list) else []
     action_labels = []
@@ -122,23 +142,28 @@ def build_run_narrative(run: dict[str, Any]) -> dict[str, str]:
             label += f" ({_display(target)})"
         action_labels.append(label)
 
-    if run.get("behavior_observation_available") is False:
+    if run.get("infrastructure_censored") and observation_status == "partial":
+        evidence_path = "A partial behavioral trace was recorded before infrastructure censorship interrupted the run."
+    elif run.get("behavior_observation_available") is False:
         evidence_path = "No behavioral trace or annotation artifact was available for this run."
     elif action_labels:
         evidence_path = "The run selected " + " -> ".join(action_labels) + "."
     else:
         evidence_path = "The run recorded no accepted tool actions."
     edit_count = behavior.get("edit_count") if isinstance(behavior.get("edit_count"), int) else None
-    if edit_count is not None and edit_count > 0:
-        before_edit = behavior.get("actions_before_first_edit")
-        edit_text = f" before its first edit" if before_edit is not None else ""
-        evidence_path += f" It selected {before_edit} action(s){edit_text}."
-    else:
-        evidence_path += " It recorded no repair edit."
+    if not run.get("infrastructure_censored"):
+        if edit_count is not None and edit_count > 0:
+            before_edit = behavior.get("actions_before_first_edit")
+            edit_text = f" before its first edit" if before_edit is not None else ""
+            evidence_path += f" It selected {before_edit} action(s){edit_text}."
+        else:
+            evidence_path += " It recorded no repair edit."
 
     hypotheses = behavior.get("leading_hypotheses") if isinstance(behavior.get("leading_hypotheses"), list) else []
     confidences = behavior.get("confidence_sequence") if isinstance(behavior.get("confidence_sequence"), list) else []
-    if run.get("behavior_observation_available") is False:
+    if run.get("infrastructure_censored") and observation_status == "partial":
+        hypothesis_path = "Any checkpoint hypothesis shown is partial because infrastructure censorship interrupted the run."
+    elif run.get("behavior_observation_available") is False:
         hypothesis_path = "No checkpoint hypothesis was available because behavioral annotations were missing."
     elif hypotheses:
         hypothesis_path = f"The run recorded {len(hypotheses)} checkpoint(s); the last leading hypothesis was “{_display(hypotheses[-1])}”."
@@ -148,13 +173,13 @@ def build_run_narrative(run: dict[str, Any]) -> dict[str, str]:
         hypothesis_path = "The run recorded no checkpoint hypothesis."
 
     if run.get("infrastructure_censored"):
-        outcome = "Execution was infrastructure-censored, so behavioral verification was unavailable."
+        outcome = "Execution was infrastructure-censored and interrupted before a complete behavioral episode could be verified."
     elif run.get("behavior_observation_available") is False:
         outcome = f"Behavioral annotations were unavailable. Verifier status was {_display(run.get('verifier_status'))}."
     else:
         repair = f"attempted a repair with {edit_count} edit(s)" if edit_count else "did not attempt a repair edit"
         termination = _display(behavior.get("termination_reason"), "no explicit termination reason")
-        budget = "the evidence budget was marked exhausted" if behavior.get("budget_exhausted") else "the evidence budget was not marked exhausted"
+        budget = "the run encountered an evidence-budget rejection" if behavior.get("budget_exhausted") else "the run did not encounter an evidence-budget rejection"
         verifier = _display(run.get("verifier_status"))
         outcome = f"The run {repair}, ended with “{termination}”, and {budget}. Verifier status was {verifier}."
 
@@ -199,7 +224,7 @@ def _condition_metadata(condition_id: Any, condition: Any) -> dict[str, Any]:
     return metadata
 
 
-def _merge_trial_metadata(manifest: dict[str, Any], batch_id: str) -> dict[str, dict[str, Any]]:
+def _merge_trial_metadata(manifest: dict[str, Any], batch_id: str, *, public_manifest: bool) -> dict[str, dict[str, Any]]:
     raw_conditions = manifest.get("conditions", [])
     if not isinstance(raw_conditions, list) or not all(isinstance(item, dict) for item in raw_conditions):
         raise BehaviorReportError(f"batch {batch_id} has malformed conditions")
@@ -222,10 +247,16 @@ def _merge_trial_metadata(manifest: dict[str, Any], batch_id: str) -> dict[str, 
             condition_id = current.get("condition_id")
             if condition_id in conditions:
                 current["condition"] = _condition_metadata(condition_id, conditions[condition_id])
+            if not isinstance(current.get("pair_id"), str):
+                family_id = current.get("family_id")
+                repetition = current.get("repetition")
+                if isinstance(condition_id, str) and isinstance(family_id, str) and isinstance(repetition, int):
+                    current["pair_id"] = derive_public_pair_id(batch_id, condition_id, family_id, repetition)
+            current["public_run_id"] = run_id if public_manifest else derive_public_run_id(batch_id, run_id)
     return metadata
 
 
-def _load_batch_metadata(source_root: Path) -> tuple[dict[str, dict[str, Any]], list[str]]:
+def _load_batch_metadata(source_root: Path, *, source_kind: str) -> tuple[dict[str, dict[str, Any]], list[str]]:
     batches_root = source_root / "batches"
     if not batches_root.exists():
         return {}, []
@@ -241,29 +272,21 @@ def _load_batch_metadata(source_root: Path) -> tuple[dict[str, dict[str, Any]], 
         manifest = _read_json(manifest_path)
         if not isinstance(manifest, dict):
             raise BehaviorReportError(f"batch {batch_dir.name} manifest must be an object")
-        try:
-            validate_public_batch_manifest(manifest)
-        except ValueError as exc:
-            raise BehaviorReportError(f"batch {batch_dir.name} manifest is not publishable") from exc
+        public_manifest = source_kind == "public_release"
+        if public_manifest:
+            try:
+                validate_public_batch_manifest(manifest)
+            except ValueError as exc:
+                raise BehaviorReportError(f"batch {batch_dir.name} manifest is not publishable") from exc
         batch_id = manifest.get("batch_id", batch_dir.name)
         if not isinstance(batch_id, str):
             raise BehaviorReportError(f"batch {batch_dir.name} has an invalid batch id")
         batch_ids.append(batch_id)
-        for run_id, metadata in _merge_trial_metadata(manifest, batch_id).items():
+        for run_id, metadata in _merge_trial_metadata(manifest, batch_id, public_manifest=public_manifest).items():
             if run_id in by_run:
                 raise BehaviorReportError(f"run id appears in multiple batch manifests: {run_id}")
             by_run[run_id] = metadata
     return by_run, sorted(set(batch_ids))
-
-
-def _inferred_trial_fields(run_id: str) -> dict[str, Any]:
-    match = _RUN_ID_VARIANT_PATTERN.search(run_id)
-    if not match:
-        return {}
-    return {
-        "variant_slot": int(match.group("variant")),
-        "repetition": int(match.group("repetition")),
-    }
 
 
 def _run_entry(run_dir: Path, batch_metadata: dict[str, dict[str, Any]]) -> dict[str, Any]:
@@ -273,10 +296,19 @@ def _run_entry(run_dir: Path, batch_metadata: dict[str, dict[str, Any]]) -> dict
     raw_run = _read_json(run_path)
     if not isinstance(raw_run, dict) or not isinstance(raw_run.get("run_id"), str):
         raise BehaviorReportError("run.json must contain a string run_id")
-    run_id = raw_run["run_id"]
-    trial = dict(batch_metadata.get(run_id, {}))
+    internal_run_id = raw_run["run_id"]
+    trial = dict(batch_metadata.get(internal_run_id, {}))
     trial.update({key: raw_run[key] for key in ("family_id", "execution_status", "infrastructure_censored") if key in raw_run})
-    trial.update({key: value for key, value in _inferred_trial_fields(run_id).items() if key not in trial})
+    if "pair_id" not in trial and isinstance(raw_run.get("pair_id"), str):
+        trial["pair_id"] = raw_run["pair_id"]
+    if "repetition" not in trial and isinstance(raw_run.get("repetition"), int):
+        trial["repetition"] = raw_run["repetition"]
+    public_run_id = trial.get("public_run_id")
+    if not isinstance(public_run_id, str):
+        batch_id = trial.get("batch_id")
+        if not isinstance(batch_id, str):
+            raise BehaviorReportError(f"run lacks batch metadata: {internal_run_id}")
+        public_run_id = derive_public_run_id(batch_id, internal_run_id)
 
     raw_condition = raw_run.get("condition") if isinstance(raw_run.get("condition"), dict) else {}
     condition_id = trial.get("condition_id", raw_run.get("registration_id"))
@@ -288,19 +320,25 @@ def _run_entry(run_dir: Path, batch_metadata: dict[str, dict[str, Any]]) -> dict
         verifier = {}
 
     behavior = _behavior_from_run(run_dir)
-    behavior_observation_available = (run_dir / "event_trace.json").is_file() or (run_dir / "behavioral_annotations.json").is_file()
+    behavior_artifact_available = (run_dir / "event_trace.json").is_file() or (run_dir / "behavioral_annotations.json").is_file()
+    infrastructure_censored = trial.get("infrastructure_censored", raw_run.get("infrastructure_censored", False)) is True
+    if infrastructure_censored:
+        observation_status = "partial" if behavior_artifact_available else "unavailable"
+    else:
+        observation_status = "complete" if behavior_artifact_available else "missing"
     entry: dict[str, Any] = {
-        "run_id": run_id,
+        "run_id": public_run_id,
         "batch_id": trial.get("batch_id"),
+        "pair_id": trial.get("pair_id"),
         "condition": condition,
         "family_id": trial.get("family_id"),
         "repetition": trial.get("repetition"),
-        "variant_slot": trial.get("variant_slot", "redacted"),
         "execution_status": trial.get("execution_status", raw_run.get("execution_status")),
-        "infrastructure_censored": trial.get("infrastructure_censored", raw_run.get("infrastructure_censored", False)),
+        "infrastructure_censored": infrastructure_censored,
         "verifier_status": verifier.get("status", trial.get("verifier_status")),
         "verifier_passed": verifier.get("passed", trial.get("verifier_passed")),
-        "behavior_observation_available": behavior_observation_available,
+        "behavior_observation_available": observation_status == "complete",
+        "behavior_observation_status": observation_status,
         "behavior": behavior,
     }
     entry["narrative"] = build_run_narrative(entry)
@@ -310,38 +348,45 @@ def _run_entry(run_dir: Path, batch_metadata: dict[str, dict[str, Any]]) -> dict
 def _comparison_key(run: dict[str, Any]) -> tuple[Any, ...]:
     condition = run.get("condition")
     condition_id = condition.get("condition_id") if isinstance(condition, dict) else None
-    return run.get("batch_id"), condition_id, run.get("family_id"), run.get("repetition")
+    return run.get("batch_id"), condition_id, run.get("family_id"), run.get("pair_id")
 
 
 def _build_comparisons(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     groups: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
     for run in runs:
         if (
-            isinstance(run.get("variant_slot"), int)
+            isinstance(run.get("pair_id"), str)
             and run.get("infrastructure_censored") is not True
-            and run.get("behavior_observation_available") is not False
+            and run.get("behavior_observation_status") == "complete"
         ):
             groups.setdefault(_comparison_key(run), []).append(run)
 
     comparisons: list[dict[str, Any]] = []
     for key, group in sorted(groups.items(), key=lambda item: tuple(str(part) for part in item[0])):
-        group.sort(key=lambda run: (run["variant_slot"], run["run_id"]))
+        group.sort(key=lambda run: run["run_id"])
         for first, second in combinations(group, 2):
-            if first["variant_slot"] == second["variant_slot"]:
-                continue
             first_behavior = first["behavior"]
             second_behavior = second["behavior"]
-            changed = [field for field in _BEHAVIOR_FIELDS if first_behavior.get(field) != second_behavior.get(field)]
+            changed_decision = [
+                field for field in _DECISION_BEHAVIOR_FIELDS if first_behavior.get(field) != second_behavior.get(field)
+            ]
+            changed_operational = [
+                field for field in _OPERATIONAL_FIELDS if first_behavior.get(field) != second_behavior.get(field)
+            ]
             comparisons.append(
                 {
                     "condition_id": key[1],
                     "family_id": key[2],
-                    "repetition": key[3],
-                    "first_variant_slot": first["variant_slot"],
-                    "second_variant_slot": second["variant_slot"],
+                    "pair_id": key[3],
+                    "run_ids": sorted([first["run_id"], second["run_id"]]),
+                    "repetition": first.get("repetition"),
                     "batch_id": key[0],
-                    "changed_behavior_fields": changed,
-                    "behavior_changed": bool(changed),
+                    "changed_behavior_fields": changed_decision,
+                    "changed_decision_fields": changed_decision,
+                    "changed_operational_fields": changed_operational,
+                    "decision_behavior_changed": bool(changed_decision),
+                    "operational_metadata_changed": bool(changed_operational),
+                    "behavior_changed": bool(changed_decision),
                     "comparison_is_causal_only_if_pre_registered": True,
                 }
             )
@@ -446,8 +491,11 @@ def _build_case_narratives(runs: list[dict[str, Any]], comparisons: list[dict[st
     for key in sorted(grouped, key=lambda item: tuple(str(part) for part in item)):
         group = sorted(grouped[key], key=lambda run: run["run_id"])
         group_comparisons = comparisons_by_key.get(key, [])
-        changed_comparisons = [item for item in group_comparisons if item.get("behavior_changed")]
-        changed_fields = sorted({field for item in group_comparisons for field in item.get("changed_behavior_fields", [])})
+        changed_comparisons = [item for item in group_comparisons if item.get("decision_behavior_changed")]
+        changed_fields = sorted({field for item in group_comparisons for field in item.get("changed_decision_fields", [])})
+        operational_fields = sorted(
+            {field for item in group_comparisons for field in item.get("changed_operational_fields", [])}
+        )
         status_counts: dict[str, int] = {}
         for run in group:
             status = run.get("verifier_status") or "unavailable"
@@ -457,13 +505,15 @@ def _build_case_narratives(runs: list[dict[str, Any]], comparisons: list[dict[st
         elif changed_comparisons:
             field_text = ", ".join(changed_fields) if changed_fields else "the recorded behavior fields"
             narrative = (
-                f"Across {len(changed_comparisons)} paired comparison(s), observable behavior changed in {field_text}. "
+                f"Across {len(changed_comparisons)} paired comparison(s), decision-path behavior changed in {field_text}. "
                 f"The group contains {len(group_comparisons)} paired comparison(s) total."
             )
         else:
             narrative = (
-                f"Across {len(group_comparisons)} paired comparison(s), the compared observable behavior fields were preserved."
+                f"Across {len(group_comparisons)} paired comparison(s), the compared decision-path fields were preserved."
             )
+        if operational_fields:
+            narrative += f" Operational metadata changed in {', '.join(operational_fields)}."
         narrative += " Causal language is permitted only when the comparison was pre-registered."
         narratives.append(
             {
@@ -472,7 +522,6 @@ def _build_case_narratives(runs: list[dict[str, Any]], comparisons: list[dict[st
                 "family_id": key[2],
                 "run_count": len(group),
                 "repetition_count": len({run.get("repetition") for run in group}),
-                "variant_slots": sorted({run.get("variant_slot") for run in group if isinstance(run.get("variant_slot"), int)}),
                 "paired_comparison_count": len(group_comparisons),
                 "behavior_changed_comparison_count": len(changed_comparisons),
                 "changed_behavior_fields": changed_fields,
@@ -489,7 +538,7 @@ def build_behavior_report(source_root: Path, *, source_kind: str) -> dict[str, A
     runs_root = source_root / "runs"
     if not runs_root.exists() or not runs_root.is_dir():
         raise BehaviorReportError("source must contain a runs directory")
-    batch_metadata, batch_ids = _load_batch_metadata(source_root)
+    batch_metadata, batch_ids = _load_batch_metadata(source_root, source_kind=source_kind)
     runs: list[dict[str, Any]] = []
     skipped: list[str] = []
     seen_run_ids: set[str] = set()
@@ -508,7 +557,7 @@ def build_behavior_report(source_root: Path, *, source_kind: str) -> dict[str, A
     comparisons = _build_comparisons(runs)
     report = {
         "schema": BEHAVIOR_REPORT_SCHEMA,
-        "report_version": 1,
+        "report_version": 2,
         "source": {
             "source_kind": source_kind,
             "batch_ids": batch_ids,

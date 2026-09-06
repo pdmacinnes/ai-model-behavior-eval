@@ -19,7 +19,14 @@ from .execution_policy import (
     validate_trusted_provider_command,
 )
 from .protocol import EvidenceSession
-from .public import sanitize_public_run, sanitize_public_trace
+from .public import (
+    derive_public_pair_id,
+    derive_public_run_id,
+    sanitize_public_batch_manifest,
+    sanitize_public_run,
+    sanitize_public_trace,
+    sanitize_public_verifier_result,
+)
 from .pilot import (
     PILOT_BATCH_MANIFEST_SCHEMA,
     PILOT_REGISTRATION_SCHEMA,
@@ -70,6 +77,10 @@ __all__ = [
     "run_unattended_trial",
     "sanitize_public_run",
     "sanitize_public_trace",
+    "sanitize_public_batch_manifest",
+    "sanitize_public_verifier_result",
+    "derive_public_run_id",
+    "derive_public_pair_id",
     "PILOT_BATCH_MANIFEST_SCHEMA",
     "PILOT_REGISTRATION_SCHEMA",
     "PilotCondition",
