@@ -32,6 +32,12 @@ _BEHAVIOR_FIELDS = (
 _LOCAL_PATH_PATTERN = re.compile(r"(?:[A-Za-z]:\\[^\s\"']+|/(?:Users|home|workspace)/[^\s\"']+)")
 _SECRET_PATTERN = re.compile(r"\b(?:sk|rk|sess)-[A-Za-z0-9_-]{8,}\b|\bBearer\s+[A-Za-z0-9._-]{8,}", re.IGNORECASE)
 _RUN_ID_VARIANT_PATTERN = re.compile(r"-v(?P<variant>\d+)-r(?P<repetition>\d+)$")
+_FIRST_ACTION_PATTERNS = {
+    "list_files": "evidence_first_list_files",
+    "inspect": "evidence_first_inspect",
+    "search": "evidence_first_search",
+    "trace": "evidence_first_trace",
+}
 
 
 class BehaviorReportError(ValueError):
@@ -330,6 +336,84 @@ def _build_comparisons(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return comparisons
 
 
+def _patterns_for_run(run: dict[str, Any]) -> list[str]:
+    if run.get("infrastructure_censored"):
+        return ["infrastructure_censored"]
+    behavior = run.get("behavior") if isinstance(run.get("behavior"), dict) else {}
+    patterns: list[str] = []
+    actions = behavior.get("action_sequence") if isinstance(behavior.get("action_sequence"), list) else []
+    if not actions:
+        patterns.append("no_accepted_actions")
+    else:
+        first_action = actions[0] if isinstance(actions[0], str) else None
+        first_pattern = _FIRST_ACTION_PATTERNS.get(first_action)
+        if first_pattern:
+            patterns.append(first_pattern)
+    checkpoint_count = behavior.get("checkpoint_count")
+    if isinstance(checkpoint_count, int) and checkpoint_count > 0:
+        patterns.append("hypothesis_checkpoint_recorded")
+    repair_attempted = behavior.get("repair_attempted")
+    if repair_attempted is True:
+        patterns.append("repair_attempted")
+    elif repair_attempted is False:
+        patterns.append("no_repair_edit")
+    if behavior.get("budget_exhausted") is True:
+        patterns.append("budget_exhausted")
+    rejected_count = behavior.get("rejected_action_count")
+    if isinstance(rejected_count, int) and rejected_count > 0:
+        patterns.append("rejected_action_recorded")
+    return sorted(patterns)
+
+
+def _build_profiles(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[str, dict[str, Any]] = {}
+    for run in runs:
+        condition = run.get("condition") if isinstance(run.get("condition"), dict) else {}
+        condition_id = condition.get("condition_id") if isinstance(condition.get("condition_id"), str) else "redacted"
+        profile = grouped.setdefault(
+            condition_id,
+            {
+                "condition_id": condition_id,
+                "condition": {
+                    key: condition[key]
+                    for key in ("condition_id", "provider", "model_id", "adapter_id", "reasoning_effort", "network_required")
+                    if key in condition
+                },
+                "run_count": 0,
+                "family_ids": set(),
+                "patterns": {},
+            },
+        )
+        profile["run_count"] += 1
+        if isinstance(run.get("family_id"), str):
+            profile["family_ids"].add(run["family_id"])
+        for pattern in _patterns_for_run(run):
+            pattern_runs = profile["patterns"].setdefault(pattern, [])
+            pattern_runs.append(run["run_id"])
+
+    profiles = []
+    for condition_id in sorted(grouped):
+        profile = grouped[condition_id]
+        observed_patterns = [
+            {
+                "pattern": pattern,
+                "run_count": len(sorted(run_ids)),
+                "run_ids": sorted(run_ids),
+            }
+            for pattern, run_ids in sorted(profile["patterns"].items())
+        ]
+        profiles.append(
+            {
+                "condition_id": profile["condition_id"],
+                "condition": _safe_value(profile["condition"]),
+                "run_count": profile["run_count"],
+                "family_ids": sorted(profile["family_ids"]),
+                "observed_patterns": observed_patterns,
+            }
+        )
+    return profiles
+
+
 def build_behavior_report(source_root: Path, *, source_kind: str) -> dict[str, Any]:
     source_root = source_root.resolve()
     runs_root = source_root / "runs"
@@ -361,6 +445,7 @@ def build_behavior_report(source_root: Path, *, source_kind: str) -> dict[str, A
             "skipped_run_directories": sorted(skipped),
         },
         "runs": runs,
+        "profiles": _build_profiles(runs),
         "comparisons": _build_comparisons(runs),
         "limitations": [
             "This report describes observable behavior and does not rank models or compute a composite score.",

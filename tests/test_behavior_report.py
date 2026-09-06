@@ -125,6 +125,13 @@ class BehavioralReportTests(unittest.TestCase):
 
             self.assertEqual(report["source"]["run_count"], 2)
             self.assertEqual([run["run_id"] for run in report["runs"]], [run_one, run_two])
+            self.assertEqual(len(report["profiles"]), 1)
+            profile = report["profiles"][0]
+            self.assertEqual(profile["run_count"], 2)
+            self.assertEqual(
+                [item["pattern"] for item in profile["observed_patterns"]],
+                ["evidence_first_inspect", "evidence_first_search", "hypothesis_checkpoint_recorded", "no_repair_edit"],
+            )
             self.assertEqual(len(report["comparisons"]), 1)
             comparison = report["comparisons"][0]
             self.assertEqual(comparison["first_variant_slot"], 1)
@@ -154,6 +161,7 @@ class BehavioralReportTests(unittest.TestCase):
             self.assertTrue(entry["infrastructure_censored"])
             self.assertEqual(entry["execution_status"], "adapter_timeout")
             self.assertEqual(entry["verifier_status"], "infrastructure_censored")
+            self.assertEqual(report["profiles"][0]["observed_patterns"][0]["pattern"], "infrastructure_censored")
             self.assertFalse(entry["behavior"]["action_sequence"])
             self.assertIsNone(entry["behavior"]["repair_attempted"])
             self.assertIn("infrastructure-censored", entry["narrative"]["outcome"])
