@@ -46,8 +46,13 @@ class PublicReleaseTests(unittest.TestCase):
             self.assertEqual(manifest["run_count"], 1)
             public_annotations = json.loads((output / "runs" / "run-1" / "behavioral_annotations.json").read_text(encoding="utf-8"))
             self.assertNotIn("revealed_factors", public_annotations)
+            public_trace = json.loads((output / "runs" / "run-1" / "event_trace.json").read_text(encoding="utf-8"))
+            self.assertNotIn("reveals", public_trace["events"][0])
             public_run = json.loads((output / "runs" / "run-1" / "run.json").read_text(encoding="utf-8"))
             self.assertNotIn("declaration", public_run["verifier_result"])
+            public_case = json.loads((output / "cases" / "dashboard-filter-refresh" / "family.json").read_text(encoding="utf-8"))
+            self.assertNotIn("hidden_cause", public_case["variants"][0])
+            self.assertNotIn("reveals", public_case["variants"][0]["observations"][0])
 
 
 if __name__ == "__main__":

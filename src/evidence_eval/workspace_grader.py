@@ -53,6 +53,8 @@ def invoke_workspace_verifier(
         result = verifier(family, variant, workspace)
         if not isinstance(result, WorkspaceVerifierResult):
             raise TypeError("workspace verifiers must return WorkspaceVerifierResult")
+        if (result.status == "passed") != result.passed:
+            raise ValueError("workspace verifier status and passed flag disagree")
         return result
     except Exception as exc:  # verifier failures are recorded, never treated as a pass
         return WorkspaceVerifierResult(

@@ -38,6 +38,17 @@ class WorkspaceGraderTests(unittest.TestCase):
         self.assertEqual(seen["family"], family.family_id)
         self.assertEqual(seen["variant"], family.variants[0].variant_id)
 
+    def test_inconsistent_verifier_result_fails_closed(self):
+        family = load_case_family(ROOT / "behavior_cases" / "dashboard-filter-refresh" / "family.json")
+
+        def verifier(received_family, received_variant, workspace):
+            return WorkspaceVerifierResult("bad-v1", "failed", True, {}, [])
+
+        with tempfile.TemporaryDirectory() as directory:
+            result = invoke_workspace_verifier(verifier, family, family.variants[0], Path(directory))
+        self.assertEqual(result.status, "error")
+        self.assertFalse(result.passed)
+
 
 if __name__ == "__main__":
     unittest.main()

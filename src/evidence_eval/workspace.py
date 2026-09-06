@@ -65,6 +65,21 @@ def _manifest_sha256(manifest: dict[str, dict[str, Any]]) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+def resolve_workspace_path(root: Path, relative: str) -> Path:
+    """Resolve a model-visible path while preserving the workspace boundary."""
+    _validate_relative_path(relative)
+    workspace_root = root.resolve()
+    candidate = workspace_root / Path(relative)
+    if _has_link_component(candidate):
+        raise WorkspaceMaterializationError(f"workspace path contains a symlink or junction: {relative!r}")
+    resolved = candidate.resolve()
+    try:
+        resolved.relative_to(workspace_root)
+    except ValueError as exc:
+        raise WorkspaceMaterializationError(f"workspace path escapes destination: {relative!r}") from exc
+    return resolved
+
+
 def materialize_variant(variant: CaseVariant, destination: Path) -> MaterializedWorkspace:
     """Copy only visible variant files into a fresh disposable workspace.
 
@@ -86,14 +101,7 @@ def materialize_variant(variant: CaseVariant, destination: Path) -> Materialized
         if not isinstance(relative, str) or not isinstance(content, str):
             raise WorkspaceMaterializationError("workspace files must map string paths to string contents")
         _validate_relative_path(relative)
-        candidate = root / Path(relative)
-        if _has_link_component(candidate):
-            raise WorkspaceMaterializationError(f"workspace path contains a symlink or junction: {relative!r}")
-        target = candidate.resolve()
-        try:
-            target.relative_to(root)
-        except ValueError as exc:
-            raise WorkspaceMaterializationError(f"workspace path escapes destination: {relative!r}") from exc
+        target = resolve_workspace_path(root, relative)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8", newline="\n")
 

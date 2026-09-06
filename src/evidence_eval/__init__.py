@@ -13,6 +13,7 @@ from .workspace_grader import (
     invoke_workspace_verifier,
     not_configured_workspace_verifier,
 )
+from .workspace_runner import WorkspaceTools, run_workspace_trial, workspace_tool_contract
 
 __all__ = [
     "CaseFamily",
@@ -37,4 +38,7 @@ __all__ = [
     "WorkspaceVerifierResult",
     "invoke_workspace_verifier",
     "not_configured_workspace_verifier",
+    "WorkspaceTools",
+    "run_workspace_trial",
+    "workspace_tool_contract",
 ]
