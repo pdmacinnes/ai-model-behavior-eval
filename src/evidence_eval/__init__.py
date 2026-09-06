@@ -3,6 +3,15 @@
 from .analysis import analyze_trace, compare_variants
 from .calibration import calibrate_case_family
 from .case_validation import validate_case_family
+from .execution_policy import (
+    APPROVED_PROVIDER_ADAPTER_ID,
+    ExecutionPolicyError,
+    NETWORK_AUTHORIZATION_ENV,
+    PROVIDER_CREDENTIAL_ENV,
+    live_environment_names,
+    validate_execution_authorization,
+    validate_trusted_provider_command,
+)
 from .protocol import EvidenceSession
 from .public import sanitize_public_run, sanitize_public_trace
 from .pilot import (
@@ -62,6 +71,13 @@ __all__ = [
     "tool_contract",
     "load_case_family",
     "validate_case_family",
+    "APPROVED_PROVIDER_ADAPTER_ID",
+    "ExecutionPolicyError",
+    "NETWORK_AUTHORIZATION_ENV",
+    "PROVIDER_CREDENTIAL_ENV",
+    "live_environment_names",
+    "validate_execution_authorization",
+    "validate_trusted_provider_command",
     "SubprocessAdapterConfig",
     "SubprocessWorkspaceAdapter",
     "OpenAICompatibleTransport",

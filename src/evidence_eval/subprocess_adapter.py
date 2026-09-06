@@ -21,6 +21,7 @@ from typing import Any
 
 from cursor_eval.adapters import _clean_agent_env
 
+from .execution_policy import NETWORK_AUTHORIZATION_ENV, PROVIDER_CREDENTIAL_ENV
 from .runner import AgentResult
 from .workspace_runner import WorkspaceTools
 
@@ -32,6 +33,7 @@ class SubprocessAdapterConfig:
     max_message_chars: int = 32_000
     max_pending_messages: int = 128
     credential_env_names: tuple[str, ...] = ()
+    network_authorized: bool = False
 
 
 _WORKER_BEHAVIOR_STATUSES = frozenset({"completed", "refused", "insufficient_evidence", "stopped"})
@@ -78,9 +80,13 @@ class SubprocessWorkspaceAdapter:
     def _child_environment(self) -> dict[str, str]:
         environment = _clean_agent_env()
         environment.pop("PYTHONPATH", None)
+        environment.pop(NETWORK_AUTHORIZATION_ENV, None)
+        environment.pop(PROVIDER_CREDENTIAL_ENV, None)
         for name in self.config.credential_env_names:
             if name in os.environ:
                 environment[name] = os.environ[name]
+        if self.config.network_authorized:
+            environment[NETWORK_AUTHORIZATION_ENV] = "1"
         return environment
 
     @staticmethod

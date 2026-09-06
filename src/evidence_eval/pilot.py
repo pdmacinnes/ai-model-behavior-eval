@@ -13,6 +13,11 @@ from cursor_eval.artifacts import ArtifactExistsError, write_run_artifacts
 
 from .calibration import calibrate_case_family
 from .case_validation import validate_case_family
+from .execution_policy import (
+    ExecutionPolicyError,
+    live_environment_names,
+    validate_execution_authorization,
+)
 from .runner import ModelCondition
 from .schema import CaseFamily, CaseVariant, load_case_family
 from .subprocess_adapter import SubprocessAdapterConfig, SubprocessWorkspaceAdapter
@@ -206,8 +211,6 @@ def _parse_condition(raw: Any, index: int) -> PilotCondition:
         raise PilotRegistrationError(f"conditions[{index}].reasoning_effort must be a string or null")
     if type(value["network_required"]) is not bool:
         raise PilotRegistrationError(f"conditions[{index}].network_required must be a boolean")
-    if value["network_required"]:
-        raise PilotRegistrationError("network_required=true is not supported before a provider sandbox policy exists")
     return PilotCondition(
         condition_id=_safe_identifier(value["condition_id"], f"conditions[{index}].condition_id"),
         provider=_non_empty_string(value["provider"], f"conditions[{index}].provider"),
@@ -215,7 +218,7 @@ def _parse_condition(raw: Any, index: int) -> PilotCondition:
         adapter_id=_safe_identifier(value["adapter_id"], f"conditions[{index}].adapter_id"),
         command=tuple(command),
         reasoning_effort=reasoning_effort,
-        network_required=False,
+        network_required=value["network_required"],
         timeout_seconds=_positive_number(value["timeout_seconds"], f"conditions[{index}].timeout_seconds"),
     )
 
@@ -328,8 +331,6 @@ def _validate_registration_shape(registration: PilotRegistration) -> None:
         if not variant_ids or len(set(variant_ids)) != len(variant_ids):
             raise PilotRegistrationError(f"variant_ids[{family_id!r}] must contain unique values")
     for condition in registration.conditions:
-        if condition.network_required:
-            raise PilotRegistrationError("network_required=true is not supported before a provider sandbox policy exists")
         if condition.timeout_seconds >= registration.trial_timeout_seconds:
             raise PilotRegistrationError(
                 f"condition {condition.condition_id!r} timeout must be shorter than trial_timeout_seconds"
@@ -490,7 +491,11 @@ def _aggregates(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [grouped[key] for key in sorted(grouped)]
 
 
-def run_pilot_batch(registration: PilotRegistration) -> dict[str, Any]:
+def run_pilot_batch(registration: PilotRegistration, *, allow_network: bool = False) -> dict[str, Any]:
+    try:
+        validate_execution_authorization(registration, allow_network=allow_network)
+    except ExecutionPolicyError as exc:
+        raise PilotRegistrationError(str(exc)) from exc
     families = _load_families(registration)
     planned = plan_pilot_trials(registration, families)
     batch_dir = registration.artifacts_root / "batches" / registration.batch_id
@@ -509,6 +514,8 @@ def run_pilot_batch(registration: PilotRegistration) -> dict[str, Any]:
             SubprocessAdapterConfig(
                 command=trial.condition.command,
                 timeout_seconds=trial.condition.timeout_seconds,
+                credential_env_names=live_environment_names(trial.condition),
+                network_authorized=trial.condition.network_required,
             )
         )
         try:

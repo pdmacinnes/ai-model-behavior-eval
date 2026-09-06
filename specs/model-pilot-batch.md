@@ -25,7 +25,7 @@ The batch runner accepts a versioned registration containing:
 - The artifact output root.
 - The workspace parent and per-trial timeout.
 
-`reasoning_effort` is either a string or explicit `null`. `network_required` is a boolean and must be `false` for this batch runner until an explicit provider sandbox policy exists. Worker conditions do not accept a `cwd` field or any equivalent workspace-root override.
+`reasoning_effort` is either a string or explicit `null`. `network_required` is a boolean. Network-required conditions are accepted only through the separately approved trusted-provider execution policy and an explicit batch-level authorization flag. Worker conditions do not accept a `cwd` field or any equivalent workspace-root override.
 
 Worker commands are executed through `SubprocessWorkspaceAdapter`. The runner passes no workspace path, verifier object, hidden cause, or answer-key annotation to the worker. A worker may use only the JSONL workspace tool protocol. The in-repository deterministic reference worker is a policy script, not a real model and requires no API key.
 
@@ -86,9 +86,9 @@ The runner may include counts and verifier outcomes as supporting fields, but it
 - If one trial leaves a deferred workspace after a timeout, the batch records the cleanup state and continues without reusing that workspace.
 - If a run or batch identifier already exists, the runner refuses to overwrite it.
 - If the worker command references a missing executable or exits before its final message, the run is recorded as infrastructure-censored and the batch proceeds.
-- If a registration contains a `cwd`, workspace path, case-root override, unknown field, or `network_required=true`, validation fails before any worker invocation.
+- If a registration contains a `cwd`, workspace path, case-root override, or unknown field, validation fails before any worker invocation. A network-required registration fails before any worker invocation unless the trusted-provider execution policy and explicit batch authorization both validate.
 - Raw adapter results and final response files are excluded from the public release in version one. If a provider worker writes credentials, workspace paths, or hidden case data into structured publishable artifacts such as the batch manifest, publication is blocked. Version one does not claim to scrub arbitrary free text; the sanitizer must not be described as a secret-removal system.
-- If a provider requires network access, that requirement must be declared in the condition and handled by the future provider sandbox policy. The batch runner itself must not silently broaden filesystem or network access.
+- If a provider requires network access, that requirement must be declared in the condition and handled by the trusted-provider execution policy. The batch runner must not silently broaden filesystem or network access.
 
 ## Acceptance Criteria
 

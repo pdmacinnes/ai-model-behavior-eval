@@ -10,12 +10,24 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Any, Protocol, TextIO
 
+from .execution_policy import (
+    NETWORK_AUTHORIZATION_ENV,
+    PROVIDER_BASE_URL_ENV,
+    PROVIDER_CREDENTIAL_ENV,
+)
+
 
 SUPPORTED_TOOL_METHODS = frozenset(
     {"request_evidence", "edit_file", "record_checkpoint", "stop_investigation"}
 )
 BEHAVIOR_STATUSES = frozenset({"completed", "refused", "insufficient_evidence", "stopped"})
 PROVIDER_WORKER_VERSION = "evidence-jsonl-provider-worker-v1"
+DEFAULT_MAX_REQUEST_BYTES = 256_000
+DEFAULT_MAX_CONVERSATION_MESSAGES = 32
+DEFAULT_MAX_CONVERSATION_CHARS = 128_000
+DEFAULT_MAX_TOOL_DEFINITION_BYTES = 32_000
+DEFAULT_MAX_RESPONSE_BYTES = 128_000
+DEFAULT_MAX_RESPONSE_TEXT_CHARS = 32_000
 
 
 class ProviderWorkerError(RuntimeError):
@@ -92,12 +104,24 @@ def build_openai_compatible_request(
     *,
     model_id: str,
     reasoning_effort: str | None,
+    max_request_bytes: int = DEFAULT_MAX_REQUEST_BYTES,
+    max_conversation_messages: int = DEFAULT_MAX_CONVERSATION_MESSAGES,
+    max_conversation_chars: int = DEFAULT_MAX_CONVERSATION_CHARS,
+    max_tool_definition_bytes: int = DEFAULT_MAX_TOOL_DEFINITION_BYTES,
 ) -> dict[str, Any]:
     model = _require_string(model_id, "model_id")
     if not isinstance(messages, list) or not all(isinstance(item, dict) for item in messages):
         raise ProviderWorkerError("provider messages must be objects")
     if not isinstance(tools, list) or not tools:
         raise ProviderWorkerError("provider tools must be a non-empty list")
+    _validate_provider_bounds(
+        messages,
+        tools,
+        max_request_bytes=max_request_bytes,
+        max_conversation_messages=max_conversation_messages,
+        max_conversation_chars=max_conversation_chars,
+        max_tool_definition_bytes=max_tool_definition_bytes,
+    )
     request: dict[str, Any] = {
         "model": model,
         "messages": json.loads(json.dumps(messages, ensure_ascii=False)),
@@ -106,7 +130,36 @@ def build_openai_compatible_request(
     }
     if reasoning_effort is not None:
         request["reasoning_effort"] = _require_string(reasoning_effort, "reasoning_effort")
+    if len(json.dumps(request, ensure_ascii=False, separators=(",", ":")).encode("utf-8")) > max_request_bytes:
+        raise ProviderWorkerError("provider request exceeded the byte bound")
     return request
+
+
+def _validate_provider_bounds(
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]],
+    *,
+    max_request_bytes: int,
+    max_conversation_messages: int,
+    max_conversation_chars: int,
+    max_tool_definition_bytes: int,
+) -> None:
+    bounds = (
+        max_request_bytes,
+        max_conversation_messages,
+        max_conversation_chars,
+        max_tool_definition_bytes,
+    )
+    if any(value <= 0 for value in bounds):
+        raise ValueError("provider request bounds must be positive")
+    if len(messages) > max_conversation_messages:
+        raise ProviderWorkerError("provider conversation exceeded the message bound")
+    serialized_messages = json.dumps(messages, ensure_ascii=False, separators=(",", ":"))
+    if len(serialized_messages) > max_conversation_chars:
+        raise ProviderWorkerError("provider conversation exceeded the character bound")
+    serialized_tools = json.dumps(tools, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    if len(serialized_tools) > max_tool_definition_bytes:
+        raise ProviderWorkerError("provider tool definitions exceeded the byte bound")
 
 
 def parse_openai_compatible_response(value: Any, *, max_text_chars: int = 32_000) -> ProviderReply:
@@ -159,19 +212,38 @@ class OpenAICompatibleTransport:
         base_url: str,
         api_key: str,
         timeout_seconds: float = 30.0,
-        max_response_bytes: int = 128_000,
-        max_text_chars: int = 32_000,
+        max_response_bytes: int = DEFAULT_MAX_RESPONSE_BYTES,
+        max_text_chars: int = DEFAULT_MAX_RESPONSE_TEXT_CHARS,
+        max_request_bytes: int = DEFAULT_MAX_REQUEST_BYTES,
+        max_conversation_messages: int = DEFAULT_MAX_CONVERSATION_MESSAGES,
+        max_conversation_chars: int = DEFAULT_MAX_CONVERSATION_CHARS,
+        max_tool_definition_bytes: int = DEFAULT_MAX_TOOL_DEFINITION_BYTES,
         allow_network: bool = False,
     ) -> None:
         if not base_url or "\n" in base_url or "\r" in base_url:
             raise ValueError("provider base URL must be a non-empty single-line value")
-        if timeout_seconds <= 0 or max_response_bytes <= 0 or max_text_chars <= 0:
+        if any(
+            value <= 0
+            for value in (
+                timeout_seconds,
+                max_response_bytes,
+                max_text_chars,
+                max_request_bytes,
+                max_conversation_messages,
+                max_conversation_chars,
+                max_tool_definition_bytes,
+            )
+        ):
             raise ValueError("provider transport bounds must be positive")
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.timeout_seconds = timeout_seconds
         self.max_response_bytes = max_response_bytes
         self.max_text_chars = max_text_chars
+        self.max_request_bytes = max_request_bytes
+        self.max_conversation_messages = max_conversation_messages
+        self.max_conversation_chars = max_conversation_chars
+        self.max_tool_definition_bytes = max_tool_definition_bytes
         self.allow_network = allow_network
 
     def request(
@@ -191,6 +263,10 @@ class OpenAICompatibleTransport:
             tools,
             model_id=model_id,
             reasoning_effort=reasoning_effort,
+            max_request_bytes=self.max_request_bytes,
+            max_conversation_messages=self.max_conversation_messages,
+            max_conversation_chars=self.max_conversation_chars,
+            max_tool_definition_bytes=self.max_tool_definition_bytes,
         )
         endpoint = self.base_url if self.base_url.endswith("/chat/completions") else f"{self.base_url}/chat/completions"
         request = urllib.request.Request(
@@ -349,8 +425,11 @@ def run_provider_worker(
     *,
     max_rounds: int = 16,
     max_message_chars: int = 32_000,
+    max_conversation_messages: int = DEFAULT_MAX_CONVERSATION_MESSAGES,
+    max_conversation_chars: int = DEFAULT_MAX_CONVERSATION_CHARS,
+    max_tool_definition_bytes: int = DEFAULT_MAX_TOOL_DEFINITION_BYTES,
 ) -> None:
-    if max_rounds <= 0 or max_message_chars <= 0:
+    if any(value <= 0 for value in (max_rounds, max_message_chars, max_conversation_messages, max_conversation_chars, max_tool_definition_bytes)):
         raise ValueError("worker bounds must be positive")
     task_message = _read_json_line(input_stream, max_message_chars)
     if task_message.get("type") != "task" or not isinstance(task_message.get("task"), dict):
@@ -366,8 +445,15 @@ def run_provider_worker(
         raise ProviderWorkerError("task is missing a tool contract")
     tools = _provider_tools(tool_contract)
     messages: list[dict[str, Any]] = [{"role": "user", "content": prompt}]
+    _validate_provider_bounds(
+        messages,
+        tools,
+        max_request_bytes=DEFAULT_MAX_REQUEST_BYTES,
+        max_conversation_messages=max_conversation_messages,
+        max_conversation_chars=max_conversation_chars,
+        max_tool_definition_bytes=max_tool_definition_bytes,
+    )
     rounds = 0
-    stopped = False
 
     while rounds < max_rounds:
         rounds += 1
@@ -436,8 +522,15 @@ def run_provider_worker(
                 "content": json.dumps(result_value, ensure_ascii=False, separators=(",", ":")),
             }
         )
+        _validate_provider_bounds(
+            messages,
+            tools,
+            max_request_bytes=DEFAULT_MAX_REQUEST_BYTES,
+            max_conversation_messages=max_conversation_messages,
+            max_conversation_chars=max_conversation_chars,
+            max_tool_definition_bytes=max_tool_definition_bytes,
+        )
         if call.name == "stop_investigation" and result_ok:
-            stopped = True
             _write_json_line(
                 output_stream,
                 {
@@ -455,8 +548,7 @@ def run_provider_worker(
             )
             return
 
-    if not stopped:
-        raise ProviderWorkerError("provider worker exceeded its round bound")
+    raise ProviderWorkerError("provider worker exceeded its round bound")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -464,9 +556,7 @@ def main(argv: list[str] | None = None) -> int:
 
     parser = argparse.ArgumentParser(description="Run a bounded JSONL provider worker.")
     parser.add_argument("--transport", choices=("mock", "openai-compatible"), default="openai-compatible")
-    parser.add_argument("--base-url", default=os.environ.get("EVIDENCE_EVAL_PROVIDER_BASE_URL", ""))
-    parser.add_argument("--api-key-env", default="EVIDENCE_EVAL_PROVIDER_API_KEY")
-    parser.add_argument("--allow-network", action="store_true")
+    parser.add_argument("--base-url", default=os.environ.get(PROVIDER_BASE_URL_ENV, ""))
     parser.add_argument("--max-rounds", type=int, default=16)
     parser.add_argument("--max-message-chars", type=int, default=32_000)
     args = parser.parse_args(argv)
@@ -476,8 +566,8 @@ def main(argv: list[str] | None = None) -> int:
         else:
             transport = OpenAICompatibleTransport(
                 base_url=args.base_url,
-                api_key=os.environ.get(args.api_key_env, ""),
-                allow_network=args.allow_network,
+                api_key=os.environ.get(PROVIDER_CREDENTIAL_ENV, ""),
+                allow_network=os.environ.get(NETWORK_AUTHORIZATION_ENV) == "1",
             )
         run_provider_worker(
             sys.stdin,

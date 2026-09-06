@@ -2,16 +2,24 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import sys
 import tempfile
 import unittest
+import urllib.error
+from unittest.mock import patch
 from pathlib import Path
 
+from evidence_eval.execution_policy import NETWORK_AUTHORIZATION_ENV, PROVIDER_BASE_URL_ENV, PROVIDER_CREDENTIAL_ENV
 from evidence_eval.provider_worker import (
     OpenAICompatibleTransport,
+    ProviderReply,
+    ProviderToolCall,
+    ProviderWorkerError,
     ProviderTransportError,
     ScriptedMockTransport,
     build_openai_compatible_request,
+    main,
     parse_openai_compatible_response,
     run_provider_worker,
 )
@@ -126,6 +134,138 @@ class ProviderWorkerTests(unittest.TestCase):
         transport = OpenAICompatibleTransport(base_url="https://example.invalid/v1", api_key="", allow_network=True)
         with self.assertRaisesRegex(ProviderTransportError, "credential is missing"):
             transport.request([], [{"type": "function"}], model_id="model-a", reasoning_effort=None)
+
+    def test_request_byte_bound_rejects_before_urlopen(self):
+        transport = OpenAICompatibleTransport(
+            base_url="https://example.invalid/v1",
+            api_key="secret",
+            allow_network=True,
+            max_request_bytes=1,
+        )
+        with patch("evidence_eval.provider_worker.urllib.request.urlopen") as urlopen:
+            with self.assertRaisesRegex(ProviderWorkerError, "request exceeded the byte bound"):
+                transport.request(
+                    [{"role": "user", "content": "investigate"}],
+                    [{"type": "function", "function": {"name": "request_evidence", "parameters": {}}}],
+                    model_id="model-a",
+                    reasoning_effort=None,
+                )
+        urlopen.assert_not_called()
+
+    def test_tool_definition_bound_is_independent(self):
+        with self.assertRaisesRegex(ProviderWorkerError, "tool definitions exceeded"):
+            build_openai_compatible_request(
+                [{"role": "user", "content": "investigate"}],
+                [{"type": "function", "function": {"name": "request_evidence", "parameters": {}}}],
+                model_id="model-a",
+                reasoning_effort=None,
+                max_tool_definition_bytes=1,
+            )
+
+    def test_conversation_append_bound_fails_before_next_request(self):
+        class OneCallTransport:
+            calls = 0
+
+            def request(self, messages, tools, *, model_id, reasoning_effort):
+                del messages, tools, model_id, reasoning_effort
+                self.calls += 1
+                return ProviderReply(
+                    tool_calls=(ProviderToolCall("call-1", "request_evidence", {"action": "inspect", "target": "app/dashboard/page.tsx"}),),
+                )
+
+        task = self._task()
+        input_stream = io.StringIO(
+            json.dumps(task)
+            + "\n"
+            + json.dumps(
+                {
+                    "type": "result",
+                    "id": "call-1",
+                    "ok": True,
+                    "result": {"content": "x" * 1000},
+                }
+            )
+            + "\n"
+        )
+        transport = OneCallTransport()
+        with self.assertRaisesRegex(ProviderWorkerError, "conversation exceeded"):
+            run_provider_worker(input_stream, io.StringIO(), transport, max_conversation_chars=500)
+        self.assertEqual(transport.calls, 1)
+
+    def test_http_timeout_is_sanitized(self):
+        transport = OpenAICompatibleTransport(
+            base_url="https://example.invalid/v1",
+            api_key="secret",
+            allow_network=True,
+        )
+        with patch(
+            "evidence_eval.provider_worker.urllib.request.urlopen",
+            side_effect=urllib.error.URLError("secret-body"),
+        ):
+            with self.assertRaisesRegex(ProviderTransportError, "provider request failed") as context:
+                transport.request(
+                    [{"role": "user", "content": "investigate"}],
+                    [{"type": "function", "function": {"name": "request_evidence", "parameters": {}}}],
+                    model_id="model-a",
+                    reasoning_effort=None,
+                )
+        self.assertNotIn("secret-body", str(context.exception))
+
+    def test_fake_http_transport_parses_without_external_network(self):
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc_value, traceback):
+                return False
+
+            def read(self, limit):
+                self.limit = limit
+                return b'{"choices":[{"message":{"content":"ok","tool_calls":[]}}]}'
+
+        transport = OpenAICompatibleTransport(
+            base_url="http://fake.local/v1",
+            api_key="secret",
+            allow_network=True,
+        )
+        with patch("evidence_eval.provider_worker.urllib.request.urlopen", return_value=FakeResponse()) as urlopen:
+            reply = transport.request(
+                [{"role": "user", "content": "investigate"}],
+                [{"type": "function", "function": {"name": "request_evidence", "parameters": {}}}],
+                model_id="model-a",
+                reasoning_effort=None,
+            )
+        self.assertEqual(reply.text, "ok")
+        request = urlopen.call_args.args[0]
+        self.assertEqual(request.full_url, "http://fake.local/v1/chat/completions")
+        self.assertEqual(request.get_header("Authorization"), "Bearer secret")
+
+    def test_worker_network_gate_is_parent_environment_only(self):
+        with patch.dict(os.environ, {PROVIDER_BASE_URL_ENV: "https://example.invalid/v1"}, clear=True):
+            with patch("evidence_eval.provider_worker.run_provider_worker") as run_worker:
+                self.assertEqual(main(["--transport", "openai-compatible"]), 0)
+        disabled_transport = run_worker.call_args.args[2]
+        self.assertFalse(disabled_transport.allow_network)
+
+        with patch.dict(
+            os.environ,
+            {
+                PROVIDER_BASE_URL_ENV: "https://example.invalid/v1",
+                PROVIDER_CREDENTIAL_ENV: "secret",
+                NETWORK_AUTHORIZATION_ENV: "1",
+            },
+            clear=True,
+        ):
+            with patch("evidence_eval.provider_worker.run_provider_worker") as run_worker:
+                self.assertEqual(main(["--transport", "openai-compatible"]), 0)
+        enabled_transport = run_worker.call_args.args[2]
+        self.assertTrue(enabled_transport.allow_network)
+
+    def test_worker_rejects_local_network_and_credential_overrides(self):
+        with self.assertRaises(SystemExit):
+            main(["--allow-network"])
+        with self.assertRaises(SystemExit):
+            main(["--api-key-env", "OTHER"])
 
     def test_mock_worker_completes_tool_loop_and_stops(self):
         task = self._task()

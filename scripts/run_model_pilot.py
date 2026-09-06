@@ -10,8 +10,9 @@ from evidence_eval.pilot import load_pilot_registration, run_pilot_batch
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run a registered unattended model pilot batch.")
     parser.add_argument("--registration", type=Path, required=True)
+    parser.add_argument("--allow-network", action="store_true")
     args = parser.parse_args()
-    manifest = run_pilot_batch(load_pilot_registration(args.registration))
+    manifest = run_pilot_batch(load_pilot_registration(args.registration), allow_network=args.allow_network)
     print(json.dumps(manifest, indent=2, sort_keys=True))
     return 0
 

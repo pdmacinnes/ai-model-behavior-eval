@@ -52,7 +52,7 @@ def _reference_registration(output_root: Path, *, batch_id: str = "reference-tes
 
 
 class PilotBatchTests(unittest.TestCase):
-    def test_registration_rejects_unknown_fields_and_network(self):
+    def test_registration_rejects_unknown_fields_and_requires_policy_for_network(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             payload = {
@@ -88,8 +88,14 @@ class PilotBatchTests(unittest.TestCase):
             del payload["cwd"]
             payload["conditions"][0]["network_required"] = True
             path.write_text(json.dumps(payload), encoding="utf-8")
-            with self.assertRaisesRegex(PilotRegistrationError, "network_required=true"):
-                load_pilot_registration(path)
+            registration = load_pilot_registration(path)
+            with self.assertRaisesRegex(PilotRegistrationError, "allow-network"):
+                run_pilot_batch(registration)
+
+            payload["conditions"][0]["network_required"] = False
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            with self.assertRaisesRegex(PilotRegistrationError, "only valid"):
+                run_pilot_batch(load_pilot_registration(path), allow_network=True)
 
     def test_planned_ids_use_variant_slots_not_answer_key_ids(self):
         family = load_case_family(ROOT / "behavior_cases" / "dashboard-filter-refresh" / "family.json")

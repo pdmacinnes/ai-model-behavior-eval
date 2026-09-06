@@ -10,6 +10,7 @@ from pathlib import Path
 
 from evidence_eval.runner import AgentResult, ModelCondition
 from evidence_eval.schema import load_case_family
+from evidence_eval.execution_policy import NETWORK_AUTHORIZATION_ENV, PROVIDER_CREDENTIAL_ENV
 from evidence_eval.subprocess_adapter import SubprocessAdapterConfig, SubprocessWorkspaceAdapter
 from evidence_eval.workspace_grader import WorkspaceVerifierResult
 from evidence_eval.workspace_runner import run_workspace_trial
@@ -19,6 +20,29 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class SubprocessAdapterTests(unittest.TestCase):
+    def test_network_marker_and_credential_are_parent_owned(self):
+        with patch.dict(
+            os.environ,
+            {NETWORK_AUTHORIZATION_ENV: "spoofed", PROVIDER_CREDENTIAL_ENV: "secret"},
+            clear=False,
+        ):
+            unauthorised = SubprocessWorkspaceAdapter(
+                SubprocessAdapterConfig((sys.executable, "-c", "pass"), timeout_seconds=5.0)
+            )._child_environment()
+            authorised = SubprocessWorkspaceAdapter(
+                SubprocessAdapterConfig(
+                    (sys.executable, "-c", "pass"),
+                    timeout_seconds=5.0,
+                    credential_env_names=(PROVIDER_CREDENTIAL_ENV,),
+                    network_authorized=True,
+                )
+            )._child_environment()
+
+        self.assertNotIn(NETWORK_AUTHORIZATION_ENV, unauthorised)
+        self.assertNotIn(PROVIDER_CREDENTIAL_ENV, unauthorised)
+        self.assertEqual(authorised[NETWORK_AUTHORIZATION_ENV], "1")
+        self.assertEqual(authorised[PROVIDER_CREDENTIAL_ENV], "secret")
+
     def test_credential_passthrough_is_explicit_and_default_cleaner_still_strips_keys(self):
         family = load_case_family(ROOT / "behavior_cases" / "dashboard-filter-refresh" / "family.json")
         condition = ModelCondition(
