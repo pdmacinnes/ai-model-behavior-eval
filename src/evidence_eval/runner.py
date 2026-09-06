@@ -9,7 +9,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Protocol
+from typing import Any, Protocol
 
 from cursor_eval.artifacts import write_run_artifacts
 
@@ -19,6 +19,7 @@ from .schema import CaseFamily, CaseVariant
 
 
 PROTOCOL_VERSION = "evidence-protocol-v1"
+_CHANNELS: dict[str, EvidenceSession] = {}
 
 
 def _hash_json(value: Any) -> str:
@@ -63,21 +64,19 @@ class AgentResult:
 
 
 class EvidenceAdapter(Protocol):
-    def __call__(self, task: dict[str, str], tools: "EvidenceTools") -> AgentResult: ...
+    def __call__(self, task: dict[str, Any], tools: "EvidenceTools") -> AgentResult: ...
 
 
 class EvidenceTools:
     """A capability facade that exposes no case or session object to adapters."""
 
-    __slots__ = ("__request_impl", "__checkpoint_impl", "__stop_impl")
+    __slots__ = ("__channel_id",)
 
-    def __init__(self, request_impl: Callable[..., ToolResponse], checkpoint_impl: Callable[..., None], stop_impl: Callable[..., None]) -> None:
-        self.__request_impl = request_impl
-        self.__checkpoint_impl = checkpoint_impl
-        self.__stop_impl = stop_impl
+    def __init__(self, channel_id: str) -> None:
+        self.__channel_id = channel_id
 
     def request(self, action: str, target: str) -> ToolResponse:
-        return self.__request_impl(action, target)
+        return _CHANNELS[self.__channel_id].request(action, target)
 
     def checkpoint(
         self,
@@ -88,7 +87,7 @@ class EvidenceTools:
         changed_by: str,
         next_action: str,
     ) -> None:
-        self.__checkpoint_impl(
+        _CHANNELS[self.__channel_id].checkpoint(
             leading_hypothesis=leading_hypothesis,
             alternative_hypothesis=alternative_hypothesis,
             confidence=confidence,
@@ -97,7 +96,7 @@ class EvidenceTools:
         )
 
     def stop(self, reason: str) -> None:
-        self.__stop_impl(reason)
+        _CHANNELS[self.__channel_id].stop(reason)
 
 
 def tool_contract(family: CaseFamily) -> dict[str, Any]:
@@ -180,9 +179,12 @@ def run_unattended_trial(
 
     resolved_run_id = _safe_run_id(run_id or str(uuid.uuid4()))
     session = EvidenceSession(family, variant)
-    tools = EvidenceTools(session.request, session.checkpoint, session.stop)
-    task = dict(family.initial_context)
+    channel_id = uuid.uuid4().hex
+    _CHANNELS[channel_id] = session
+    tools = EvidenceTools(channel_id)
     contract = tool_contract(family)
+    task: dict[str, Any] = dict(family.initial_context)
+    task["tool_contract"] = contract
     task_hash = _hash_json(task)
     contract_hash = _hash_json(contract)
     started_at = datetime.now(timezone.utc).isoformat()
@@ -260,6 +262,7 @@ def run_unattended_trial(
         "behavioral_annotations.json": annotations,
     }
     write_run_artifacts(artifacts_root / "runs" / resolved_run_id, artifacts)
+    _CHANNELS.pop(channel_id, None)
     return run_record | {
         "trace": trace,
         "adapter_result": result.to_dict(),

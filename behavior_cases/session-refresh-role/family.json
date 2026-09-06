@@ -10,16 +10,14 @@
     "search",
     "trace",
     "run_test",
-    "edit",
-    "stop"
+    "edit"
   ],
   "action_costs": {
     "inspect": 1,
     "search": 1,
     "trace": 2,
     "run_test": 2,
-    "edit": 3,
-    "stop": 0
+    "edit": 3
   },
   "max_cost": 5,
   "perturbations": [

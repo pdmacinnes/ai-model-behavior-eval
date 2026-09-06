@@ -18,7 +18,7 @@ The pilot contains three paired case families:
 - `session-refresh-role` - stale session data versus an authorization guard
 - `pagination-offset` - client offset mismatch versus server page normalization
 
-Each family has the same relevant visible symptom across variants, at least two plausible hypotheses, discriminating evidence, a bounded tool protocol, and a hidden verifier declaration. The dependency-free fixture calibration now executes the pre-fix failure, applies the declared mutation in memory, and checks the post-fix invariant. The current proof uses deterministic policies only; it does not invoke a real model.
+Each family has the same relevant visible symptom across variants, at least two plausible hypotheses, discriminating evidence, a bounded tool protocol, and a hidden verifier declaration. The dependency-free fixture calibration now executes the pre-fix failure, binds the inferred cause, checks mutation necessity, applies the declared mutation in memory, and checks the post-fix invariant. This is an authoring oracle only and must not be reused as the authoritative grader for model-produced patches. The current proof uses deterministic policies only; it does not invoke a real model.
 
 ## Run locally
 
@@ -36,6 +36,6 @@ The validation and proof commands are designed to run unattended. The unattended
 
 ## Scope and limitations
 
-The public protocol records observable tool use, edits, checkpoints, verifier outcomes, and termination state. It does not request or store private chain-of-thought. A model identity is reported exactly as registered, including any mediated agent or model-selection label; results are not generalized to a raw provider model unless that identity is directly established.
+The public protocol records observable tool use, edits, checkpoints, verifier outcomes, and termination state. It does not request or store private chain-of-thought. Internal traces retain answer-key annotations for analysis, while [public sanitizers](src/evidence_eval/public.py) remove them before release. A model identity is reported exactly as registered, including any mediated agent or model-selection label; results are not generalized to a raw provider model unless that identity is directly established.
 
 The approved design is in [specs/evidence-bounded-debugging-behavior-study.md](specs/evidence-bounded-debugging-behavior-study.md). The current fixtures are dependency-free semantic checks over TypeScript/TSX snapshots, not a full Next.js server. Real model adapters, workspace materialization, and sanitized public release artifacts are subsequent implementation phases.

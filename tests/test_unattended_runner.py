@@ -24,8 +24,9 @@ class UnattendedRunnerTests(unittest.TestCase):
         )
 
         def adapter(task, tools):
-            self.assertEqual(set(task), set(family.initial_context))
+            self.assertEqual(set(task), set(family.initial_context) | {"tool_contract"})
             self.assertFalse(hasattr(tools, "_session"))
+            self.assertFalse(hasattr(tools, "_EvidenceTools__request_impl"))
             response = tools.request("trace", "metrics-request")
             self.assertTrue(response.accepted)
             self.assertNotIn("reveals", response.to_dict())

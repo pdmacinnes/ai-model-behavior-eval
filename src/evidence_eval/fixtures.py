@@ -1,3 +1,5 @@
+"""Dependency-free authoring calibration, not an authoritative model grader."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -12,6 +14,7 @@ class FixtureOutcome:
     test_id: str
     passed: bool
     observed: dict[str, Any]
+    surface: dict[str, Any]
 
 
 def _dashboard_outcome(files: dict[str, str], test_id: str) -> FixtureOutcome:
@@ -30,6 +33,7 @@ def _dashboard_outcome(files: dict[str, str], test_id: str) -> FixtureOutcome:
             "request_has_range": request_has_range,
             "cache_is_safe": cache_is_safe,
         },
+        surface={"chart_stale_until_refresh": observed_range != 30},
     )
 
 
@@ -48,6 +52,7 @@ def _session_outcome(files: dict[str, str], test_id: str) -> FixtureOutcome:
             "server_current": server_current,
             "client_current": client_current,
         },
+        surface={"admin_nav_stale_until_refresh": observed_role != "admin"},
     )
 
 
@@ -68,6 +73,7 @@ def _pagination_outcome(files: dict[str, str], test_id: str) -> FixtureOutcome:
             "server_propagates_page": server_propagates_page,
             "offset_is_zero_based": offset_is_zero_based,
         },
+        surface={"page_two_repeats_page_one": not distinct_records},
     )
 
 
@@ -111,18 +117,34 @@ def authoritative_verify(family: CaseFamily, variant: CaseVariant, outcome: Fixt
     }
 
 
-def apply_declared_mutation(variant: CaseVariant) -> tuple[dict[str, str], list[dict[str, Any]]]:
-    files = dict(variant.files)
+def mutation_steps(variant: CaseVariant) -> list[dict[str, Any]]:
     mutation = variant.calibration["mutation_proof"]
-    steps = mutation.get("replacements") or [mutation]
+    return list(mutation.get("replacements") or [mutation])
+
+
+def apply_declared_mutation(
+    variant: CaseVariant,
+    *,
+    excluded_indices: set[int] | None = None,
+) -> tuple[dict[str, str], list[dict[str, Any]]]:
+    files = dict(variant.files)
+    excluded = excluded_indices or set()
+    steps = mutation_steps(variant)
     applied: list[dict[str, Any]] = []
-    for step in steps:
+    for index, step in enumerate(steps):
+        if index in excluded:
+            continue
         path = str(step["path"])
         before = str(step["before"])
         after = str(step["after"])
         source = files[path]
         if source.count(before) != 1:
             raise ValueError(f"{variant.variant_id}: mutation text is not unique in {path}")
+        if before == after:
+            raise ValueError(f"{variant.variant_id}: mutation step {index} is a no-op")
         files[path] = source.replace(before, after, 1)
-        applied.append({"path": path, "before_occurrences": 1, "changed": files[path] != source})
+        changed = files[path] != source
+        if not changed:
+            raise ValueError(f"{variant.variant_id}: mutation step {index} did not change its file")
+        applied.append({"index": index, "path": path, "before_occurrences": 1, "changed": changed})
     return files, applied

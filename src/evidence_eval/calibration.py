@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
-from .fixtures import authoritative_verify, apply_declared_mutation, run_visible_fixture
+from .fixtures import authoritative_verify, apply_declared_mutation, infer_cause, mutation_steps, run_visible_fixture
 from .schema import CaseFamily, CaseVariant
 
 
@@ -26,6 +27,8 @@ def _calibrate_variant(family: CaseFamily, variant: CaseVariant) -> dict[str, An
         before = None
     if before is not None and before.passed:
         errors.append("visible fixture unexpectedly passes before the declared fix")
+    if before is not None and infer_cause(family, before) != variant.verifier.get("expected_cause"):
+        errors.append("pre-fix inferred cause does not match the authoritative expected cause")
 
     applied: list[dict[str, Any]] = []
     after = None
@@ -41,6 +44,16 @@ def _calibrate_variant(family: CaseFamily, variant: CaseVariant) -> dict[str, An
         errors.append("visible fixture still fails after the declared mutation")
     if verifier.get("status") != "passed":
         errors.append("authoritative verifier did not pass after the declared mutation")
+    steps = mutation_steps(variant)
+    for index in range(len(steps)):
+        try:
+            partial_files, _ = apply_declared_mutation(variant, excluded_indices={index})
+            partial_outcome = run_visible_fixture(family, variant, partial_files)
+        except (KeyError, ValueError) as exc:
+            errors.append(f"fixture necessity check failed for mutation {index}: {exc}")
+            continue
+        if partial_outcome.passed:
+            errors.append(f"mutation step {index} is not necessary for the visible fix")
     if mutation.get("preserves_surface_signature") is not True:
         errors.append("mutation_proof must declare preserves_surface_signature=true")
 
@@ -54,10 +67,12 @@ def _calibrate_variant(family: CaseFamily, variant: CaseVariant) -> dict[str, An
             "before_passed": before.passed if before is not None else None,
             "after_passed": after.passed if after is not None else None,
             "surface_signature": visible.get("surface_signature"),
+            "before_surface": before.surface if before is not None else None,
         },
         "mutation_proof": {
             "replacement_count": len(applied),
-            "replacement_preview_valid": bool(applied),
+            "replacement_preview_valid": bool(applied) and all(item["changed"] for item in applied),
+            "necessity_checked": True,
             "preserves_surface_signature": mutation.get("preserves_surface_signature"),
             "applied_paths": [item["path"] for item in applied],
         },
@@ -89,6 +104,12 @@ def calibrate_case_family(family: CaseFamily) -> dict[str, Any]:
     }
     if len(signatures) != 1 or signatures != {variant.surface_signature for variant in family.variants}:
         errors.append("counterfactual calibration must preserve one surface signature")
+    surface_vectors = {
+        json.dumps(item["visible_test"].get("before_surface"), sort_keys=True)
+        for item in variants
+    }
+    if len(surface_vectors) != 1:
+        errors.append("counterfactual variants must share the same measured pre-fix surface vector")
 
     return {
         "family_id": family.family_id,
