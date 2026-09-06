@@ -135,6 +135,211 @@ def build_openai_compatible_request(
     return request
 
 
+def _responses_input_items(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    input_items: list[dict[str, Any]] = []
+    pending_call_ids: set[str] = set()
+    for message in messages:
+        role = message.get("role")
+        if role == "user":
+            content = message.get("content", "")
+            if not isinstance(content, str):
+                raise ProviderWorkerError("Responses user message content must be text")
+            input_items.append(
+                {
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": content}],
+                }
+            )
+            continue
+        if role == "assistant":
+            content = message.get("content")
+            if content:
+                if not isinstance(content, str):
+                    raise ProviderWorkerError("Responses assistant message content must be text")
+                input_items.append(
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": content}],
+                    }
+                )
+            raw_calls = message.get("tool_calls", [])
+            if raw_calls is None:
+                raw_calls = []
+            if not isinstance(raw_calls, list) or len(raw_calls) > 1:
+                raise ProviderWorkerError("Responses conversation must contain at most one function call per round")
+            for raw_call in raw_calls:
+                if not isinstance(raw_call, dict):
+                    raise ProviderWorkerError("Responses function call must be an object")
+                call_id = _require_string(raw_call.get("id"), "Responses function call id")
+                function = raw_call.get("function")
+                if not isinstance(function, dict):
+                    raise ProviderWorkerError("Responses function call is missing a function")
+                name = _require_string(function.get("name"), "Responses function name")
+                arguments_text = _require_string(function.get("arguments"), "Responses function arguments")
+                try:
+                    arguments = json.loads(arguments_text)
+                except json.JSONDecodeError as exc:
+                    raise ProviderWorkerError("Responses function arguments were not valid JSON") from exc
+                if not isinstance(arguments, dict):
+                    raise ProviderWorkerError("Responses function arguments must decode to an object")
+                input_items.append(
+                    {
+                        "type": "function_call",
+                        "call_id": call_id,
+                        "name": name,
+                        "arguments": json.dumps(arguments, ensure_ascii=False, separators=(",", ":")),
+                    }
+                )
+                pending_call_ids.add(call_id)
+            continue
+        if role == "tool":
+            call_id = _require_string(message.get("tool_call_id"), "Responses function output call id")
+            if call_id not in pending_call_ids:
+                raise ProviderWorkerError("Responses function output call id did not match a prior function call")
+            content = message.get("content")
+            if not isinstance(content, str):
+                raise ProviderWorkerError("Responses function output must be text")
+            input_items.append(
+                {
+                    "type": "function_call_output",
+                    "call_id": call_id,
+                    "output": content,
+                }
+            )
+            pending_call_ids.remove(call_id)
+            continue
+        raise ProviderWorkerError("Responses conversation contained an unsupported message role")
+    if pending_call_ids:
+        raise ProviderWorkerError("Responses conversation contains a function call without its result")
+    return input_items
+
+
+def _responses_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for raw_tool in tools:
+        function = raw_tool.get("function")
+        if not isinstance(function, dict):
+            raise ProviderWorkerError("Responses tool is missing a function")
+        name = _require_string(function.get("name"), "Responses tool name")
+        description = function.get("description", "")
+        if not isinstance(description, str):
+            raise ProviderWorkerError("Responses tool description must be text")
+        parameters = function.get("parameters")
+        if not isinstance(parameters, dict):
+            raise ProviderWorkerError("Responses tool parameters must be an object")
+        result.append(
+            {
+                "type": "function",
+                "name": name,
+                "description": description,
+                "parameters": json.loads(json.dumps(parameters, ensure_ascii=False)),
+            }
+        )
+    return result
+
+
+def build_openai_responses_request(
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]],
+    *,
+    model_id: str,
+    reasoning_effort: str | None,
+    max_request_bytes: int = DEFAULT_MAX_REQUEST_BYTES,
+    max_conversation_messages: int = DEFAULT_MAX_CONVERSATION_MESSAGES,
+    max_conversation_chars: int = DEFAULT_MAX_CONVERSATION_CHARS,
+    max_tool_definition_bytes: int = DEFAULT_MAX_TOOL_DEFINITION_BYTES,
+) -> dict[str, Any]:
+    model = _require_string(model_id, "model_id")
+    if not isinstance(messages, list) or not all(isinstance(item, dict) for item in messages):
+        raise ProviderWorkerError("provider messages must be objects")
+    if not isinstance(tools, list) or not tools:
+        raise ProviderWorkerError("provider tools must be a non-empty list")
+    _validate_provider_bounds(
+        messages,
+        tools,
+        max_request_bytes=max_request_bytes,
+        max_conversation_messages=max_conversation_messages,
+        max_conversation_chars=max_conversation_chars,
+        max_tool_definition_bytes=max_tool_definition_bytes,
+    )
+    input_items = _responses_input_items(messages)
+    response_tools = _responses_tools(tools)
+    serialized_input = json.dumps(input_items, ensure_ascii=False, separators=(",", ":"))
+    serialized_tools = json.dumps(response_tools, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    if len(input_items) > max_conversation_messages:
+        raise ProviderWorkerError("provider conversation exceeded the message bound")
+    if len(serialized_input) > max_conversation_chars:
+        raise ProviderWorkerError("provider conversation exceeded the character bound")
+    if len(serialized_tools) > max_tool_definition_bytes:
+        raise ProviderWorkerError("provider tool definitions exceeded the byte bound")
+    request: dict[str, Any] = {
+        "model": model,
+        "input": input_items,
+        "tools": response_tools,
+        "tool_choice": "auto",
+        "parallel_tool_calls": False,
+        "store": False,
+    }
+    if reasoning_effort is not None:
+        request["reasoning"] = {"effort": _require_string(reasoning_effort, "reasoning_effort")}
+    if len(json.dumps(request, ensure_ascii=False, separators=(",", ":")).encode("utf-8")) > max_request_bytes:
+        raise ProviderWorkerError("provider request exceeded the byte bound")
+    return request
+
+
+def parse_openai_responses_response(value: Any, *, max_text_chars: int = DEFAULT_MAX_RESPONSE_TEXT_CHARS) -> ProviderReply:
+    if not isinstance(value, dict):
+        raise ProviderTransportError("provider response must be an object")
+    if value.get("status") != "completed":
+        raise ProviderTransportError("provider response was not completed")
+    output = value.get("output")
+    if not isinstance(output, list):
+        raise ProviderTransportError("provider response must contain an output list")
+    raw_text = value.get("output_text")
+    text_parts: list[str] = []
+    if raw_text is not None:
+        if not isinstance(raw_text, str):
+            raise ProviderTransportError("provider response output_text must be text")
+        text_parts.append(raw_text)
+    tool_calls: list[ProviderToolCall] = []
+    for item in output:
+        if not isinstance(item, dict):
+            raise ProviderTransportError("provider response output item must be an object")
+        item_type = item.get("type")
+        if item_type == "message" and raw_text is None:
+            content = item.get("content")
+            if not isinstance(content, list):
+                raise ProviderTransportError("provider response message content must be a list")
+            for part in content:
+                if not isinstance(part, dict):
+                    raise ProviderTransportError("provider response message content item must be an object")
+                if part.get("type") == "output_text":
+                    text = part.get("text")
+                    if not isinstance(text, str):
+                        raise ProviderTransportError("provider response output text must be text")
+                    text_parts.append(text)
+        elif item_type == "function_call":
+            if len(tool_calls) >= 1:
+                raise ProviderTransportError("provider response must contain at most one function call")
+            call_id = _require_string(item.get("call_id"), "provider function call id")
+            name = _require_string(item.get("name"), "provider function name")
+            arguments_text = _require_string(item.get("arguments"), "provider function arguments")
+            try:
+                arguments = json.loads(arguments_text)
+            except json.JSONDecodeError as exc:
+                raise ProviderTransportError("provider function arguments were not valid JSON") from exc
+            if not isinstance(arguments, dict):
+                raise ProviderTransportError("provider function arguments must decode to an object")
+            if name not in SUPPORTED_TOOL_METHODS:
+                raise ProviderTransportError("provider returned an unsupported tool")
+            tool_calls.append(ProviderToolCall(call_id, name, arguments))
+    text = "".join(text_parts)
+    if len(text) > max_text_chars:
+        raise ProviderTransportError("provider response text exceeded the bound")
+    return ProviderReply(text=text, tool_calls=tuple(tool_calls))
+
+
 def _validate_provider_bounds(
     messages: list[dict[str, Any]],
     tools: list[dict[str, Any]],
@@ -292,6 +497,55 @@ class OpenAICompatibleTransport:
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise ProviderTransportError("provider response was not valid JSON") from exc
         return parse_openai_compatible_response(parsed, max_text_chars=self.max_text_chars)
+
+
+class OpenAIResponsesTransport(OpenAICompatibleTransport):
+    def request(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        *,
+        model_id: str,
+        reasoning_effort: str | None,
+    ) -> ProviderReply:
+        if not self.allow_network:
+            raise ProviderTransportError("real provider network execution is disabled")
+        if not self.api_key:
+            raise ProviderTransportError("provider credential is missing")
+        payload = build_openai_responses_request(
+            messages,
+            tools,
+            model_id=model_id,
+            reasoning_effort=reasoning_effort,
+            max_request_bytes=self.max_request_bytes,
+            max_conversation_messages=self.max_conversation_messages,
+            max_conversation_chars=self.max_conversation_chars,
+            max_tool_definition_bytes=self.max_tool_definition_bytes,
+        )
+        endpoint = self.base_url if self.base_url.endswith("/responses") else f"{self.base_url}/responses"
+        request = urllib.request.Request(
+            endpoint,
+            data=json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.api_key}",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
+                body = response.read(self.max_response_bytes + 1)
+        except urllib.error.HTTPError as exc:
+            raise ProviderTransportError(f"provider HTTP error {exc.code}") from None
+        except (urllib.error.URLError, TimeoutError, OSError):
+            raise ProviderTransportError("provider request failed") from None
+        if len(body) > self.max_response_bytes:
+            raise ProviderTransportError("provider response exceeded the byte bound")
+        try:
+            parsed = json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ProviderTransportError("provider response was not valid JSON") from exc
+        return parse_openai_responses_response(parsed, max_text_chars=self.max_text_chars)
 
 
 class ScriptedMockTransport:
@@ -555,7 +809,11 @@ def main(argv: list[str] | None = None) -> int:
     import argparse
 
     parser = argparse.ArgumentParser(description="Run a bounded JSONL provider worker.")
-    parser.add_argument("--transport", choices=("mock", "openai-compatible"), default="openai-compatible")
+    parser.add_argument(
+        "--transport",
+        choices=("mock", "openai-compatible", "openai-responses"),
+        default="openai-compatible",
+    )
     parser.add_argument("--base-url", default=os.environ.get(PROVIDER_BASE_URL_ENV, ""))
     parser.add_argument("--max-rounds", type=int, default=16)
     parser.add_argument("--max-message-chars", type=int, default=32_000)
@@ -563,6 +821,12 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.transport == "mock":
             transport: ProviderTransport = ScriptedMockTransport()
+        elif args.transport == "openai-responses":
+            transport = OpenAIResponsesTransport(
+                base_url=args.base_url,
+                api_key=os.environ.get(PROVIDER_CREDENTIAL_ENV, ""),
+                allow_network=os.environ.get(NETWORK_AUTHORIZATION_ENV) == "1",
+            )
         else:
             transport = OpenAICompatibleTransport(
                 base_url=args.base_url,

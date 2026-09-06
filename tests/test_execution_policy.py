@@ -78,6 +78,28 @@ class ExecutionPolicyTests(unittest.TestCase):
                 environment={},
             )
 
+    def test_responses_transport_is_allowlisted_for_live_batches(self):
+        condition = _live_condition(
+            command=(sys.executable, str(APPROVED_WORKER), "--transport", "openai-responses"),
+        )
+        validate_execution_authorization(
+            _registration(condition),
+            allow_network=True,
+            environment={PROVIDER_CREDENTIAL_ENV: "secret"},
+        )
+
+    def test_responses_transport_requires_network_declaration(self):
+        condition = _live_condition(
+            command=(sys.executable, str(APPROVED_WORKER), "--transport", "openai-responses"),
+            network_required=False,
+        )
+        with self.assertRaisesRegex(ExecutionPolicyError, "network_required"):
+            validate_execution_authorization(
+                _registration(condition),
+                allow_network=False,
+                environment={},
+            )
+
     def test_unapproved_worker_identity_and_arguments_fail_closed(self):
         with self.assertRaisesRegex(ExecutionPolicyError, "adapter identifier"):
             validate_execution_authorization(

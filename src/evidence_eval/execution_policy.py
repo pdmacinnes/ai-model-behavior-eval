@@ -13,6 +13,7 @@ if TYPE_CHECKING:
 
 
 APPROVED_PROVIDER_ADAPTER_ID = "jsonl-provider-worker"
+APPROVED_PROVIDER_TRANSPORTS = frozenset({"openai-compatible", "openai-responses"})
 NETWORK_AUTHORIZATION_ENV = "EVIDENCE_EVAL_NETWORK_AUTHORIZED"
 PROVIDER_CREDENTIAL_ENV = "EVIDENCE_EVAL_PROVIDER_API_KEY"
 PROVIDER_BASE_URL_ENV = "EVIDENCE_EVAL_PROVIDER_BASE_URL"
@@ -39,8 +40,8 @@ def validate_trusted_provider_command(condition: "PilotCondition") -> None:
         raise ExecutionPolicyError("network-required worker must use the current Python interpreter")
     if _resolved_path(command[1]) != APPROVED_PROVIDER_ENTRYPOINT:
         raise ExecutionPolicyError("network-required worker path is not the approved provider entrypoint")
-    if command[2:4] != ("--transport", "openai-compatible"):
-        raise ExecutionPolicyError("network-required worker must select the OpenAI-compatible transport")
+    if command[2] != "--transport" or command[3] not in APPROVED_PROVIDER_TRANSPORTS:
+        raise ExecutionPolicyError("network-required worker must select an approved provider transport")
     index = 4
     seen: set[str] = set()
     allowed_numeric = {"--max-rounds", "--max-message-chars"}
@@ -60,6 +61,14 @@ def validate_execution_authorization(
     allow_network: bool,
     environment: Mapping[str, str] | None = None,
 ) -> None:
+    for condition in registration.conditions:
+        if (
+            len(condition.command) >= 4
+            and condition.command[2] == "--transport"
+            and condition.command[3] == "openai-responses"
+            and not condition.network_required
+        ):
+            raise ExecutionPolicyError("openai-responses transport requires network_required: true")
     network_conditions = tuple(condition for condition in registration.conditions if condition.network_required)
     if network_conditions and not allow_network:
         raise ExecutionPolicyError("network-required registration needs the explicit --allow-network batch flag")
