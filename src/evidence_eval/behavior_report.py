@@ -90,6 +90,70 @@ def _project_behavior(value: dict[str, Any]) -> dict[str, Any]:
     return projected
 
 
+def _compact_text(value: Any, limit: int = 180) -> str:
+    text = _safe_text(str(value)).replace("\r", " ").replace("\n", " ").strip()
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "…"
+
+
+def _display(value: Any, fallback: str = "not recorded") -> str:
+    if value is None or value == "":
+        return fallback
+    return _compact_text(value)
+
+
+def build_run_narrative(run: dict[str, Any]) -> dict[str, str]:
+    """Describe one public report entry without adding new behavioral claims."""
+    behavior = run.get("behavior") if isinstance(run.get("behavior"), dict) else _empty_behavior()
+    actions = behavior.get("action_sequence") if isinstance(behavior.get("action_sequence"), list) else []
+    targets = behavior.get("target_sequence") if isinstance(behavior.get("target_sequence"), list) else []
+    action_labels = []
+    for index, action in enumerate(actions):
+        target = targets[index] if index < len(targets) else None
+        label = _display(action)
+        if target is not None:
+            label += f" ({_display(target)})"
+        action_labels.append(label)
+
+    if action_labels:
+        evidence_path = "The run selected " + " -> ".join(action_labels) + "."
+    else:
+        evidence_path = "The run recorded no accepted tool actions."
+    edit_count = behavior.get("edit_count") if isinstance(behavior.get("edit_count"), int) else None
+    if edit_count is not None and edit_count > 0:
+        before_edit = behavior.get("actions_before_first_edit")
+        edit_text = f" before its first edit" if before_edit is not None else ""
+        evidence_path += f" It selected {before_edit} action(s){edit_text}."
+    else:
+        evidence_path += " It recorded no repair edit."
+
+    hypotheses = behavior.get("leading_hypotheses") if isinstance(behavior.get("leading_hypotheses"), list) else []
+    confidences = behavior.get("confidence_sequence") if isinstance(behavior.get("confidence_sequence"), list) else []
+    if hypotheses:
+        hypothesis_path = f"The run recorded {len(hypotheses)} checkpoint(s); the last leading hypothesis was “{_display(hypotheses[-1])}”."
+        if confidences:
+            hypothesis_path += " Confidence was recorded as " + " -> ".join(_display(item) for item in confidences) + "."
+    else:
+        hypothesis_path = "The run recorded no checkpoint hypothesis."
+
+    if run.get("infrastructure_censored"):
+        outcome = "Execution was infrastructure-censored, so behavioral verification was unavailable."
+    else:
+        repair = f"attempted a repair with {edit_count} edit(s)" if edit_count else "did not attempt a repair edit"
+        termination = _display(behavior.get("termination_reason"), "no explicit termination reason")
+        budget = "the evidence budget was marked exhausted" if behavior.get("budget_exhausted") else "the evidence budget was not marked exhausted"
+        verifier = _display(run.get("verifier_status"))
+        outcome = f"The run {repair}, ended with “{termination}”, and {budget}. Verifier status was {verifier}."
+
+    return {
+        "summary": f"{evidence_path} {hypothesis_path} {outcome}",
+        "evidence_path": evidence_path,
+        "hypothesis_path": hypothesis_path,
+        "outcome": outcome,
+    }
+
+
 def _behavior_from_run(run_dir: Path) -> dict[str, Any]:
     trace_path = run_dir / "event_trace.json"
     if trace_path.is_file():
@@ -211,6 +275,7 @@ def _run_entry(run_dir: Path, batch_metadata: dict[str, dict[str, Any]]) -> dict
     if not isinstance(verifier, dict):
         verifier = {}
 
+    behavior = _behavior_from_run(run_dir)
     entry: dict[str, Any] = {
         "run_id": run_id,
         "batch_id": trial.get("batch_id"),
@@ -222,8 +287,9 @@ def _run_entry(run_dir: Path, batch_metadata: dict[str, dict[str, Any]]) -> dict
         "infrastructure_censored": trial.get("infrastructure_censored", raw_run.get("infrastructure_censored", False)),
         "verifier_status": verifier.get("status", trial.get("verifier_status")),
         "verifier_passed": verifier.get("passed", trial.get("verifier_passed")),
-        "behavior": _behavior_from_run(run_dir),
+        "behavior": behavior,
     }
+    entry["narrative"] = build_run_narrative(entry)
     return _safe_value(entry)
 
 

@@ -132,6 +132,9 @@ class BehavioralReportTests(unittest.TestCase):
             self.assertTrue(comparison["behavior_changed"])
             self.assertTrue(comparison["comparison_is_causal_only_if_pre_registered"])
             self.assertEqual(report["runs"][0]["behavior"]["first_action"], "search")
+            self.assertIn("The run selected", report["runs"][0]["narrative"]["summary"])
+            self.assertIn("last leading hypothesis", report["runs"][0]["narrative"]["hypothesis_path"])
+            self.assertIn("Verifier status", report["runs"][0]["narrative"]["outcome"])
             self.assertNotIn("variant_id", json.dumps(report))
             self.assertNotIn("hidden_cause", json.dumps(report))
             self.assertNotIn("adapter_result", json.dumps(report))
@@ -153,6 +156,8 @@ class BehavioralReportTests(unittest.TestCase):
             self.assertEqual(entry["verifier_status"], "infrastructure_censored")
             self.assertFalse(entry["behavior"]["action_sequence"])
             self.assertIsNone(entry["behavior"]["repair_attempted"])
+            self.assertIn("infrastructure-censored", entry["narrative"]["outcome"])
+            self.assertIn("no accepted tool actions", entry["narrative"]["evidence_path"])
 
     def test_public_release_input_and_annotation_fallback(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -190,6 +195,7 @@ class BehavioralReportTests(unittest.TestCase):
             self.assertEqual(report["source"]["source_kind"], "public_release")
             self.assertEqual(report["runs"][0]["behavior"]["action_sequence"], ["inspect"])
             self.assertFalse(report["runs"][0]["behavior"]["repair_attempted"])
+            self.assertIn("no checkpoint hypothesis", report["runs"][0]["narrative"]["hypothesis_path"])
             self.assertNotIn("unknown_field", json.dumps(report))
             self.assertNotIn("revealed_factors", json.dumps(report))
 
