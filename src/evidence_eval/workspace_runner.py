@@ -10,7 +10,6 @@ import tempfile
 import threading
 import time
 import uuid
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -23,7 +22,7 @@ from .protocol import ToolResponse
 from .runner import AgentResult, ModelCondition
 from .schema import CaseFamily, CaseVariant
 from .workspace import MaterializedWorkspace, materialize_variant, resolve_workspace_path
-from .workspace_grader import WorkspaceVerifier, invoke_workspace_verifier
+from .workspace_grader import WorkspaceVerifier, WorkspaceVerifierResult, invoke_workspace_verifier
 
 
 WORKSPACE_PROTOCOL_VERSION = "evidence-workspace-v1"
@@ -81,26 +80,24 @@ class _WorkspaceSession:
             self.events.append({"kind": "rejected_action", **response.to_dict()})
         return response
 
-    def _reserve(self, action: str, target: str) -> int | None:
+    def _reserve(self, action: str, target: str) -> int | ToolResponse:
         cost = self.family.action_costs.get(action)
         if self._sealed:
-            self._reject(action, target, cost or 0, "session is sealed")
-            return None
+            return self._reject(action, target, cost or 0, "session is sealed")
         if self.status != "active":
-            self._reject(action, target, cost or 0, "session is no longer active")
-            return None
+            return self._reject(action, target, cost or 0, "session is no longer active")
         if action not in self.family.allowed_actions or cost is None:
-            self._reject(action, target, 0, "unsupported action")
-            return None
+            return self._reject(action, target, 0, "unsupported action")
         if cost > self.remaining_cost:
-            self._reject(action, target, cost, "evidence budget exceeded")
-            return None
+            return self._reject(action, target, cost, "evidence budget exceeded")
         if len(self.events) >= self.family.max_events:
             self.status = "event_limit"
-            self._reject(action, target, cost, "event limit exceeded")
-            return None
+            return self._reject(action, target, cost, "event limit exceeded")
         self.remaining_cost -= cost
         return cost
+
+    def _refund(self, cost: int) -> None:
+        self.remaining_cost += cost
 
     def _accepted(self, action: str, target: str, content: str, cost: int, *, reveals: tuple[str, ...] = ()) -> ToolResponse:
         response = ToolResponse(
@@ -155,6 +152,10 @@ class _WorkspaceSession:
     def request(self, action: str, target: str) -> ToolResponse:
         if action == "edit":
             return self._reject(action, target, self.family.action_costs.get(action, 0), "use edit_file for workspace edits")
+        reserved = self._reserve(action, target)
+        if isinstance(reserved, ToolResponse):
+            return reserved
+        cost = reserved
         if action == "inspect":
             content, error = self._inspect(target)
         elif action == "search":
@@ -170,33 +171,38 @@ class _WorkspaceSession:
         else:
             content, error = "", "unsupported action"
         if error is not None:
+            self._refund(cost)
             return self._reject(action, target, self.family.action_costs.get(action, 0), error)
-        cost = self._reserve(action, target)
-        if cost is None:
-            return ToolResponse(False, action, target, "", self.family.action_costs.get(action, 0), self.remaining_cost, "request rejected")
         observation = self.variant.observation_for(action, target)
         return self._accepted(action, target, content, cost, reveals=observation.reveals if observation else ())
 
     def edit_file(self, path_text: str, before: str, after: str) -> ToolResponse:
+        reserved = self._reserve("edit", path_text)
+        if isinstance(reserved, ToolResponse):
+            return reserved
+        cost = reserved
         try:
             path = resolve_workspace_path(self.workspace, path_text)
         except ValueError as exc:
+            self._refund(cost)
             return self._reject("edit", path_text, self.family.action_costs.get("edit", 0), str(exc))
         if not path.is_file():
+            self._refund(cost)
             return self._reject("edit", path_text, self.family.action_costs.get("edit", 0), "edit target is not a visible file")
         if before == after or not before:
+            self._refund(cost)
             return self._reject("edit", path_text, self.family.action_costs.get("edit", 0), "edit must replace non-empty text with different text")
         if len(before) > self.family.max_response_chars * 4 or len(after) > self.family.max_response_chars * 4:
+            self._refund(cost)
             return self._reject("edit", path_text, self.family.action_costs.get("edit", 0), "edit payload exceeded bound")
         try:
             source = path.read_text(encoding="utf-8")
         except (OSError, UnicodeError) as exc:
+            self._refund(cost)
             return self._reject("edit", path_text, self.family.action_costs.get("edit", 0), f"could not read edit target: {type(exc).__name__}")
         if source.count(before) != 1:
+            self._refund(cost)
             return self._reject("edit", path_text, self.family.action_costs.get("edit", 0), "edit text must match exactly once")
-        cost = self._reserve("edit", path_text)
-        if cost is None:
-            return ToolResponse(False, "edit", path_text, "", self.family.action_costs.get("edit", 0), self.remaining_cost, "request rejected")
         updated = source.replace(before, after, 1)
         try:
             path.write_text(updated, encoding="utf-8", newline="\n")
@@ -215,6 +221,11 @@ class _WorkspaceSession:
             raise RuntimeError("cannot checkpoint an inactive session")
         if not 0.0 <= confidence <= 1.0:
             raise ValueError("confidence must be between 0 and 1")
+        if len(self.events) >= self.family.max_events - 1:
+            self.status = "event_limit"
+            if len(self.events) < self.family.max_events:
+                self.events.append({"kind": "rejected_checkpoint", "error": "event limit exceeded"})
+            return
         checkpoint = {
             "leading_hypothesis": leading_hypothesis,
             "alternative_hypothesis": alternative_hypothesis,
@@ -364,103 +375,122 @@ def run_workspace_trial(
         raise ValueError("condition prompt must match the case's frozen prompt")
     resolved_run_id = _safe_run_id(run_id or str(uuid.uuid4()))
     workspace_parent.mkdir(parents=True, exist_ok=True)
-    workspace = Path(tempfile.mkdtemp(prefix=f"{family.family_id}-{resolved_run_id}-", dir=workspace_parent))
-    materialized: MaterializedWorkspace = materialize_variant(variant, workspace)
-    session = _WorkspaceSession(family, variant, workspace)
-    channel_id = uuid.uuid4().hex
-    with _WORKSPACE_CHANNEL_LOCK:
-        _WORKSPACE_CHANNELS[channel_id] = session
-    tools = WorkspaceTools(channel_id)
-    contract = workspace_tool_contract(family)
-    task: dict[str, Any] = dict(family.initial_context)
-    task["tool_contract"] = contract
-    task_hash = _hash_json(task)
-    contract_hash = _hash_json(contract)
-    started_at = time.time()
-    started = time.monotonic()
-    holder: dict[str, AgentResult] = {}
-    failures: dict[str, BaseException] = {}
-
-    def invoke() -> None:
-        try:
-            candidate = adapter(task, tools)
-            if not isinstance(candidate, AgentResult):
-                raise TypeError("workspace adapters must return AgentResult")
-            holder["result"] = candidate
-        except BaseException as exc:  # Adapter failures are data, not interactive prompts.
-            failures["error"] = exc
-
-    observer = MutationObserver(workspace)
-    observer.start()
-    worker = threading.Thread(target=invoke, name=f"workspace-adapter-{resolved_run_id}", daemon=True)
-    worker.start()
-    worker.join(timeout=adapter_timeout_seconds)
-    worker_alive = worker.is_alive()
-    if worker_alive:
-        result = AgentResult(status="adapter_timeout", error=f"adapter exceeded {adapter_timeout_seconds:.3f}s")
-        session.stop("adapter timeout")
-    elif "error" in failures:
-        exc = failures["error"]
-        result = AgentResult(status="adapter_error", error=f"{type(exc).__name__}: {exc}")
-        session.stop("adapter error")
-    else:
-        result = holder["result"]
-        if len(result.final_response) > family.max_response_chars:
-            result = AgentResult(
-                status="adapter_output_limit",
-                final_response=result.final_response[: family.max_response_chars],
-                metadata=dict(result.metadata),
-                error="final response exceeded output bound and was truncated",
-            )
-    if session.status == "active":
-        session.stop("adapter returned without stopping")
-    session.seal()
-    mutation = observer.stop()
-    trace = session.to_record()
-    annotations = analyze_trace(trace)
-    verifier_result = invoke_workspace_verifier(verifier, family, variant, workspace)
-    final_manifest = file_manifest(workspace)
-    run_record = {
-        "run_id": resolved_run_id,
-        "registration_id": registration_id,
-        "family_id": family.family_id,
-        "variant_id": variant.variant_id,
-        "case_sha256": family.canonical_sha256,
-        "condition": condition.to_dict(),
-        "task_hash": task_hash,
-        "prompt_hash": hashlib.sha256(condition.prompt.encode("utf-8")).hexdigest(),
-        "tool_contract_hash": contract_hash,
-        "environment_sha256": _hash_json({"case_sha256": family.canonical_sha256, "task_hash": task_hash, "tool_contract_hash": contract_hash, "workspace_manifest_sha256": materialized.manifest_sha256}),
-        "protocol_version": WORKSPACE_PROTOCOL_VERSION,
-        "started_at_utc_epoch": started_at,
-        "runtime_seconds": time.monotonic() - started,
-        "execution_status": result.status,
-        "verifier_result": verifier_result.to_dict(),
-        "initial_workspace_manifest_sha256": materialized.manifest_sha256,
-        "final_workspace_manifest_sha256": _hash_json(final_manifest),
-        "workspace_cleanup_deferred": worker_alive,
-    }
-    artifacts = {
-        "run.json": run_record,
-        "condition.json": condition.to_dict(),
-        "task.json": task,
-        "tool_contract.json": contract,
-        "prompt.txt": condition.prompt,
-        "initial_workspace_manifest.json": materialized.files,
-        "final_workspace_manifest.json": final_manifest,
-        "mutation_observer.json": mutation,
-        "event_trace.json": trace,
-        "final_response.txt": result.final_response,
-        "adapter_result.json": result.to_dict(),
-        "verifier_result.json": verifier_result.to_dict(),
-        "behavioral_annotations.json": annotations,
-    }
+    workspace: Path | None = None
+    channel_id: str | None = None
+    worker: threading.Thread | None = None
+    timed_out = False
     try:
-        write_run_artifacts(artifacts_root / "runs" / resolved_run_id, artifacts)
-    finally:
+        workspace = Path(tempfile.mkdtemp(prefix=f"{family.family_id}-{resolved_run_id}-", dir=workspace_parent))
+        materialized: MaterializedWorkspace = materialize_variant(variant, workspace)
+        session = _WorkspaceSession(family, variant, workspace)
+        channel_id = uuid.uuid4().hex
+        with _WORKSPACE_CHANNEL_LOCK:
+            _WORKSPACE_CHANNELS[channel_id] = session
+        tools = WorkspaceTools(channel_id)
+        contract = workspace_tool_contract(family)
+        task: dict[str, Any] = dict(family.initial_context)
+        task["tool_contract"] = contract
+        task_hash = _hash_json(task)
+        contract_hash = _hash_json(contract)
+        started_at = time.time()
+        started = time.monotonic()
+        holder: dict[str, AgentResult] = {}
+        failures: dict[str, BaseException] = {}
+
+        def invoke() -> None:
+            try:
+                candidate = adapter(task, tools)
+                if not isinstance(candidate, AgentResult):
+                    raise TypeError("workspace adapters must return AgentResult")
+                holder["result"] = candidate
+            except BaseException as exc:  # Adapter failures are data, not interactive prompts.
+                failures["error"] = exc
+
+        observer = MutationObserver(workspace)
+        observer.start()
+        worker = threading.Thread(target=invoke, name=f"workspace-adapter-{resolved_run_id}", daemon=True)
+        worker.start()
+        worker.join(timeout=adapter_timeout_seconds)
+        worker_alive = worker.is_alive()
+        timed_out = worker_alive
+        if worker_alive:
+            result = AgentResult(status="adapter_timeout", error=f"adapter exceeded {adapter_timeout_seconds:.3f}s")
+            session.stop("adapter timeout")
+        elif "error" in failures:
+            exc = failures["error"]
+            result = AgentResult(status="adapter_error", error=f"{type(exc).__name__}: {exc}")
+            session.stop("adapter error")
+        else:
+            result = holder["result"]
+            if len(result.final_response) > family.max_response_chars:
+                result = AgentResult(
+                    status="adapter_output_limit",
+                    final_response=result.final_response[: family.max_response_chars],
+                    metadata=dict(result.metadata),
+                    error="final response exceeded output bound and was truncated",
+                )
+        if session.status == "active":
+            session.stop("adapter returned without stopping")
+        session.seal()
         with _WORKSPACE_CHANNEL_LOCK:
             _WORKSPACE_CHANNELS.pop(channel_id, None)
-        if not worker_alive:
+        mutation = observer.stop()
+        trace = session.to_record()
+        annotations = analyze_trace(trace)
+        if timed_out:
+            verifier_result = WorkspaceVerifierResult(
+                verifier_id=f"{family.family_id}:timeout",
+                status="timeout",
+                passed=False,
+                checks={},
+                regressions=[],
+                error="workspace verification skipped because the in-process adapter did not terminate",
+            )
+        else:
+            verifier_result = invoke_workspace_verifier(verifier, family, variant, workspace)
+        final_manifest = file_manifest(workspace)
+        run_record = {
+            "run_id": resolved_run_id,
+            "registration_id": registration_id,
+            "family_id": family.family_id,
+            "variant_id": variant.variant_id,
+            "case_sha256": family.canonical_sha256,
+            "condition": condition.to_dict(),
+            "task_hash": task_hash,
+            "prompt_hash": hashlib.sha256(condition.prompt.encode("utf-8")).hexdigest(),
+            "tool_contract_hash": contract_hash,
+            "environment_sha256": _hash_json({"case_sha256": family.canonical_sha256, "task_hash": task_hash, "tool_contract_hash": contract_hash, "workspace_manifest_sha256": materialized.manifest_sha256}),
+            "protocol_version": WORKSPACE_PROTOCOL_VERSION,
+            "started_at_utc_epoch": started_at,
+            "runtime_seconds": time.monotonic() - started,
+            "execution_status": result.status,
+            "verifier_result": verifier_result.to_dict(),
+            "initial_workspace_manifest_sha256": materialized.manifest_sha256,
+            "final_workspace_manifest_sha256": _hash_json(final_manifest),
+            "workspace_cleanup_deferred": timed_out,
+            "workspace_cleanup_reason": "adapter_thread_alive_after_timeout" if timed_out else None,
+        }
+        artifacts = {
+            "run.json": run_record,
+            "condition.json": condition.to_dict(),
+            "task.json": task,
+            "tool_contract.json": contract,
+            "prompt.txt": condition.prompt,
+            "initial_workspace_manifest.json": materialized.files,
+            "final_workspace_manifest.json": final_manifest,
+            "mutation_observer.json": mutation,
+            "event_trace.json": trace,
+            "final_response.txt": result.final_response,
+            "adapter_result.json": result.to_dict(),
+            "verifier_result.json": verifier_result.to_dict(),
+            "behavioral_annotations.json": annotations,
+        }
+        write_run_artifacts(artifacts_root / "runs" / resolved_run_id, artifacts)
+    finally:
+        if channel_id is not None:
+            with _WORKSPACE_CHANNEL_LOCK:
+                _WORKSPACE_CHANNELS.pop(channel_id, None)
+        if workspace is not None and not timed_out:
             try:
                 shutil.rmtree(workspace)
             except OSError:

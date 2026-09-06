@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import tempfile
+import time
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 from evidence_eval.runner import AgentResult, ModelCondition
@@ -127,6 +129,136 @@ class WorkspaceRunnerTests(unittest.TestCase):
             )
         self.assertEqual(record["verifier_result"]["status"], "not_configured")
         self.assertFalse(record["verifier_result"]["passed"])
+
+    def test_budget_rejection_happens_before_workspace_io(self):
+        family = load_case_family(ROOT / "behavior_cases" / "dashboard-filter-refresh" / "family.json")
+        condition = ModelCondition(
+            provider="deterministic",
+            model_id="workspace-budget",
+            adapter_id="test-workspace",
+            prompt=family.initial_context["prompt"],
+        )
+
+        def adapter(task, tools):
+            for target in family.variants[0].files:
+                self.assertTrue(tools.request("inspect", target).accepted)
+            rejected = tools.request("inspect", "does-not-exist.ts")
+            self.assertFalse(rejected.accepted)
+            self.assertEqual(rejected.error, "evidence budget exceeded")
+            tools.stop("budget test")
+            return AgentResult(status="completed")
+
+        with tempfile.TemporaryDirectory() as directory:
+            record = run_workspace_trial(
+                family,
+                family.variants[0],
+                condition,
+                adapter,
+                artifacts_root=Path(directory) / "artifacts",
+                workspace_parent=Path(directory) / "workspaces",
+                run_id="budget-run",
+            )
+        self.assertEqual(record["execution_status"], "completed")
+
+    def test_checkpoint_event_bound_is_enforced(self):
+        family = load_case_family(ROOT / "behavior_cases" / "dashboard-filter-refresh" / "family.json")
+        bounded_family = replace(family, max_events=2)
+        condition = ModelCondition(
+            provider="deterministic",
+            model_id="workspace-events",
+            adapter_id="test-workspace",
+            prompt=family.initial_context["prompt"],
+        )
+
+        def adapter(task, tools):
+            for _ in range(3):
+                tools.checkpoint(
+                    leading_hypothesis="one",
+                    alternative_hypothesis="two",
+                    confidence=0.5,
+                    changed_by="test",
+                    next_action="continue",
+                )
+            return AgentResult(status="completed")
+
+        with tempfile.TemporaryDirectory() as directory:
+            record = run_workspace_trial(
+                bounded_family,
+                bounded_family.variants[0],
+                condition,
+                adapter,
+                artifacts_root=Path(directory) / "artifacts",
+                workspace_parent=Path(directory) / "workspaces",
+                run_id="event-run",
+            )
+        self.assertEqual(record["trace"]["status"], "event_limit")
+        self.assertLessEqual(len(record["trace"]["events"]), bounded_family.max_events)
+
+    def test_timeout_skips_verification_and_defers_cleanup(self):
+        family = load_case_family(ROOT / "behavior_cases" / "dashboard-filter-refresh" / "family.json")
+        condition = ModelCondition(
+            provider="deterministic",
+            model_id="workspace-timeout",
+            adapter_id="test-workspace",
+            prompt=family.initial_context["prompt"],
+        )
+        verified = {"called": False}
+
+        def adapter(task, tools):
+            time.sleep(0.15)
+            return AgentResult(status="completed")
+
+        def verifier(received_family, received_variant, workspace):
+            verified["called"] = True
+            return WorkspaceVerifierResult("timeout-v1", "passed", True, {}, [])
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            record = run_workspace_trial(
+                family,
+                family.variants[0],
+                condition,
+                adapter,
+                artifacts_root=root / "artifacts",
+                workspace_parent=root / "workspaces",
+                verifier=verifier,
+                run_id="timeout-run",
+                adapter_timeout_seconds=0.01,
+            )
+            self.assertEqual(record["execution_status"], "adapter_timeout")
+            self.assertEqual(record["verifier_result"]["status"], "timeout")
+            self.assertFalse(record["verifier_result"]["passed"])
+            self.assertFalse(verified["called"])
+            self.assertTrue(record["workspace_cleanup_deferred"])
+            self.assertTrue(list((root / "workspaces").iterdir()))
+            time.sleep(0.2)
+
+    def test_materialization_failure_cleans_up_temporary_workspace(self):
+        family = load_case_family(ROOT / "behavior_cases" / "dashboard-filter-refresh" / "family.json")
+        unsafe = replace(family.variants[0], files={"../outside.ts": "export const bad = true;"})
+        condition = ModelCondition(
+            provider="deterministic",
+            model_id="workspace-materialization-failure",
+            adapter_id="test-workspace",
+            prompt=family.initial_context["prompt"],
+        )
+
+        def adapter(task, tools):
+            return AgentResult(status="completed")
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with self.assertRaises(ValueError):
+                run_workspace_trial(
+                    family,
+                    unsafe,
+                    condition,
+                    adapter,
+                    artifacts_root=root / "artifacts",
+                    workspace_parent=root / "workspaces",
+                    run_id="materialization-failure-run",
+                )
+            self.assertEqual(list((root / "workspaces").iterdir()), [])
 
 
 if __name__ == "__main__":
