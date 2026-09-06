@@ -7,6 +7,7 @@ from .protocol import EvidenceSession
 from .public import sanitize_public_run, sanitize_public_trace
 from .runner import AgentResult, EvidenceTools, ModelCondition, run_unattended_trial, tool_contract
 from .schema import CaseFamily, CaseVariant, ToolObservation, load_case_family
+from .subprocess_adapter import SubprocessAdapterConfig, SubprocessWorkspaceAdapter
 from .workspace import MaterializedWorkspace, WorkspaceMaterializationError, materialize_variant
 from .workspace_grader import (
     WorkspaceVerifierResult,
@@ -33,6 +34,8 @@ __all__ = [
     "tool_contract",
     "load_case_family",
     "validate_case_family",
+    "SubprocessAdapterConfig",
+    "SubprocessWorkspaceAdapter",
     "MaterializedWorkspace",
     "WorkspaceMaterializationError",
     "materialize_variant",

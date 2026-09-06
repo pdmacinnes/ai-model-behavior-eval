@@ -438,14 +438,15 @@ def run_workspace_trial(
         mutation = observer.stop()
         trace = session.to_record()
         annotations = analyze_trace(trace)
-        if timed_out:
+        verification_censored = timed_out or result.status in {"adapter_timeout", "adapter_error"}
+        if verification_censored:
             verifier_result = WorkspaceVerifierResult(
-                verifier_id=f"{family.family_id}:timeout",
-                status="timeout",
+                verifier_id=f"{family.family_id}:infrastructure-censored",
+                status="timeout" if result.status == "adapter_timeout" else "infrastructure_censored",
                 passed=False,
                 checks={},
                 regressions=[],
-                error="workspace verification skipped because the in-process adapter did not terminate",
+                error="workspace verification skipped because adapter execution was infrastructure-censored",
             )
         else:
             verifier_result = invoke_workspace_verifier(verifier or registered_workspace_verifier(family), family, variant, workspace)
@@ -465,7 +466,7 @@ def run_workspace_trial(
             "started_at_utc_epoch": started_at,
             "runtime_seconds": time.monotonic() - started,
             "execution_status": result.status,
-            "infrastructure_censored": result.status in {"adapter_timeout", "adapter_error"},
+            "infrastructure_censored": verification_censored,
             "verifier_result": verifier_result.to_dict(),
             "initial_workspace_manifest_sha256": materialized.manifest_sha256,
             "final_workspace_manifest_sha256": _hash_json(final_manifest),
