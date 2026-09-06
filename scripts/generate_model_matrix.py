@@ -21,6 +21,7 @@ def main() -> int:
     )
     parser.add_argument("--project-root", type=Path, default=project_root)
     parser.add_argument("--python-executable", type=Path, default=None)
+    parser.add_argument("--batch-label", default="v1")
     args = parser.parse_args()
 
     matrix = load_model_matrix(args.matrix.resolve())
@@ -29,6 +30,7 @@ def main() -> int:
         args.output_dir,
         project_root=args.project_root,
         python_executable=args.python_executable,
+        batch_label=args.batch_label,
     )
     for path in paths:
         print(path)

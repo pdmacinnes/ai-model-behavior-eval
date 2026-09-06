@@ -73,6 +73,9 @@ class ModelMatrixTests(unittest.TestCase):
             for payload in (smoke, full):
                 self.assertTrue(all(item["network_required"] for item in payload["conditions"]))
                 self.assertTrue(all(item["adapter_id"] == "jsonl-provider-worker" for item in payload["conditions"]))
+                self.assertTrue(all("--max-rounds" in item["command"] for item in payload["conditions"]))
+                self.assertTrue(all("--max-conversation-messages" in item["command"] for item in payload["conditions"]))
+                self.assertTrue(all("--max-conversation-chars" in item["command"] for item in payload["conditions"]))
                 serialized = json.dumps(payload)
                 self.assertNotIn("api_key", serialized.lower())
                 self.assertNotIn("secret", serialized.lower())
@@ -81,6 +84,25 @@ class ModelMatrixTests(unittest.TestCase):
             full_trials += len(conditions) * 6 * full["repetitions"]
         self.assertEqual(smoke_trials, 22)
         self.assertEqual(full_trials, 132)
+
+    def test_batch_label_creates_distinguishable_rerun(self):
+        matrix = load_model_matrix(MATRIX_PATH)
+        payload = build_registration_payload(
+            matrix.conditions_for_provider("openai"),
+            provider="openai",
+            mode="smoke",
+            project_root=ROOT,
+            batch_label="bounds-v2",
+        )
+        self.assertEqual(payload["batch_id"], "model-matrix-openai-smoke-bounds-v2")
+        with self.assertRaisesRegex(ModelMatrixError, "safe identifier"):
+            build_registration_payload(
+                matrix.conditions_for_provider("openai"),
+                provider="openai",
+                mode="smoke",
+                project_root=ROOT,
+                batch_label="bounds/v2",
+            )
 
     def test_generated_registrations_load_through_existing_parser(self):
         matrix = load_model_matrix(MATRIX_PATH)

@@ -88,6 +88,27 @@ class ExecutionPolicyTests(unittest.TestCase):
             environment={PROVIDER_CREDENTIAL_ENV: "secret"},
         )
 
+    def test_conversation_bound_arguments_are_allowlisted(self):
+        condition = _live_condition(
+            command=(
+                sys.executable,
+                str(APPROVED_WORKER),
+                "--transport",
+                "openai-responses",
+                "--max-rounds",
+                "24",
+                "--max-conversation-messages",
+                "48",
+                "--max-conversation-chars",
+                "192000",
+            ),
+        )
+        validate_execution_authorization(
+            _registration(condition),
+            allow_network=True,
+            environment={PROVIDER_CREDENTIAL_ENV: "secret"},
+        )
+
     def test_responses_transport_requires_network_declaration(self):
         condition = _live_condition(
             command=(sys.executable, str(APPROVED_WORKER), "--transport", "openai-responses"),

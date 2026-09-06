@@ -44,7 +44,12 @@ def validate_trusted_provider_command(condition: "PilotCondition") -> None:
         raise ExecutionPolicyError("network-required worker must select an approved provider transport")
     index = 4
     seen: set[str] = set()
-    allowed_numeric = {"--max-rounds", "--max-message-chars"}
+    allowed_numeric = {
+        "--max-rounds",
+        "--max-message-chars",
+        "--max-conversation-messages",
+        "--max-conversation-chars",
+    }
     while index < len(command):
         flag = command[index]
         if flag not in allowed_numeric or flag in seen:

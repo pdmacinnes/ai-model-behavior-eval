@@ -44,7 +44,7 @@ For every provider with at least one active condition, it writes:
 - `<provider>-smoke.json`: one repetition of the existing `dashboard-filter-refresh` family, both variants;
 - `<provider>-full.json`: two repetitions of all three existing case families, both variants.
 
-Each generated condition uses the reviewed `jsonl-provider-worker` command, the approved transport recorded in the catalog, `network_required: true`, and the configured reasoning effort. Generated registrations use absolute local paths so they can be run directly from PowerShell without manual path editing. No live run is started by generation.
+Each generated condition uses the reviewed `jsonl-provider-worker` command, the approved transport recorded in the catalog, `network_required: true`, the configured reasoning effort, and explicit bounded worker headroom. Generated registrations use absolute local paths so they can be run directly from PowerShell without manual path editing. No live run is started by generation.
 
 Provider batches are intentionally separate. The operator selects the matching provider endpoint and credential in the environment before running that provider's registration with `--allow-network`.
 

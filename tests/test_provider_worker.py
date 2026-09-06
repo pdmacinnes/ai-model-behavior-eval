@@ -517,6 +517,39 @@ class ProviderWorkerTests(unittest.TestCase):
         self.assertIsInstance(run_worker.call_args.args[2], OpenAIResponsesTransport)
         self.assertTrue(run_worker.call_args.args[2].allow_network)
 
+    def test_worker_cli_propagates_explicit_conversation_bounds(self):
+        with patch.dict(
+            os.environ,
+            {
+                PROVIDER_BASE_URL_ENV: "https://example.invalid/v1",
+                PROVIDER_CREDENTIAL_ENV: "secret",
+                NETWORK_AUTHORIZATION_ENV: "1",
+            },
+            clear=True,
+        ):
+            with patch("evidence_eval.provider_worker.run_provider_worker") as run_worker:
+                self.assertEqual(
+                    main(
+                        [
+                            "--transport",
+                            "openai-responses",
+                            "--max-rounds",
+                            "24",
+                            "--max-conversation-messages",
+                            "48",
+                            "--max-conversation-chars",
+                            "192000",
+                        ]
+                    ),
+                    0,
+                )
+        transport = run_worker.call_args.args[2]
+        self.assertEqual(transport.max_conversation_messages, 48)
+        self.assertEqual(transport.max_conversation_chars, 192000)
+        self.assertEqual(run_worker.call_args.kwargs["max_rounds"], 24)
+        self.assertEqual(run_worker.call_args.kwargs["max_conversation_messages"], 48)
+        self.assertEqual(run_worker.call_args.kwargs["max_conversation_chars"], 192000)
+
     def test_worker_rejects_local_network_and_credential_overrides(self):
         with self.assertRaises(SystemExit):
             main(["--allow-network"])

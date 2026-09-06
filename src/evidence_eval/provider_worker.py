@@ -817,6 +817,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--base-url", default=os.environ.get(PROVIDER_BASE_URL_ENV, ""))
     parser.add_argument("--max-rounds", type=int, default=16)
     parser.add_argument("--max-message-chars", type=int, default=32_000)
+    parser.add_argument("--max-conversation-messages", type=int, default=DEFAULT_MAX_CONVERSATION_MESSAGES)
+    parser.add_argument("--max-conversation-chars", type=int, default=DEFAULT_MAX_CONVERSATION_CHARS)
     args = parser.parse_args(argv)
     try:
         if args.transport == "mock":
@@ -825,12 +827,16 @@ def main(argv: list[str] | None = None) -> int:
             transport = OpenAIResponsesTransport(
                 base_url=args.base_url,
                 api_key=os.environ.get(PROVIDER_CREDENTIAL_ENV, ""),
+                max_conversation_messages=args.max_conversation_messages,
+                max_conversation_chars=args.max_conversation_chars,
                 allow_network=os.environ.get(NETWORK_AUTHORIZATION_ENV) == "1",
             )
         else:
             transport = OpenAICompatibleTransport(
                 base_url=args.base_url,
                 api_key=os.environ.get(PROVIDER_CREDENTIAL_ENV, ""),
+                max_conversation_messages=args.max_conversation_messages,
+                max_conversation_chars=args.max_conversation_chars,
                 allow_network=os.environ.get(NETWORK_AUTHORIZATION_ENV) == "1",
             )
         run_provider_worker(
@@ -839,6 +845,8 @@ def main(argv: list[str] | None = None) -> int:
             transport,
             max_rounds=args.max_rounds,
             max_message_chars=args.max_message_chars,
+            max_conversation_messages=args.max_conversation_messages,
+            max_conversation_chars=args.max_conversation_chars,
         )
     except (ProviderWorkerError, ValueError) as exc:
         print(f"provider worker failed: {exc}", file=sys.stderr)

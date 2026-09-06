@@ -19,6 +19,9 @@ SMOKE_REPETITIONS = 1
 FULL_REPETITIONS = 2
 TRIAL_TIMEOUT_SECONDS = 180
 WORKER_TIMEOUT_SECONDS = 150
+MATRIX_MAX_ROUNDS = 24
+MATRIX_MAX_CONVERSATION_MESSAGES = 48
+MATRIX_MAX_CONVERSATION_CHARS = 192_000
 _IDENTIFIER_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z")
 _DISALLOWED_CATALOG_TERMS = ("credential", "secret", "password", "api_key", "token", "endpoint", "path", "command")
 
@@ -158,7 +161,18 @@ def _worker_command(project_root: Path, python_executable: Path, transport: str)
     worker = (project_root / "scripts" / "openai_compatible_workspace_worker.py").resolve()
     if not worker.is_file():
         raise ModelMatrixError(f"approved provider worker does not exist: {worker}")
-    return [str(python_executable.resolve()), str(worker), "--transport", transport]
+    return [
+        str(python_executable.resolve()),
+        str(worker),
+        "--transport",
+        transport,
+        "--max-rounds",
+        str(MATRIX_MAX_ROUNDS),
+        "--max-conversation-messages",
+        str(MATRIX_MAX_CONVERSATION_MESSAGES),
+        "--max-conversation-chars",
+        str(MATRIX_MAX_CONVERSATION_CHARS),
+    ]
 
 
 def build_registration_payload(
@@ -169,6 +183,7 @@ def build_registration_payload(
     project_root: Path,
     python_executable: Path | None = None,
     harness_version: str = "0.1.0",
+    batch_label: str = "v1",
 ) -> dict[str, Any]:
     if not conditions:
         raise ModelMatrixError(f"provider {provider!r} has no active conditions")
@@ -178,7 +193,8 @@ def build_registration_payload(
     interpreter = (python_executable or Path(sys.executable)).resolve()
     families = SMOKE_FAMILY_IDS if mode == "smoke" else FULL_FAMILY_IDS
     repetitions = SMOKE_REPETITIONS if mode == "smoke" else FULL_REPETITIONS
-    batch_id = f"model-matrix-{provider}-{mode}-v1"
+    _safe_identifier(batch_label, "batch_label")
+    batch_id = _safe_identifier(f"model-matrix-{provider}-{mode}-{batch_label}", "generated batch_id")
     return {
         "schema": "evidence-bounded-debugging-pilot-registration-v1",
         "batch_id": batch_id,
@@ -211,6 +227,7 @@ def write_provider_registrations(
     *,
     project_root: Path,
     python_executable: Path | None = None,
+    batch_label: str = "v1",
 ) -> tuple[Path, ...]:
     output = output_dir.resolve()
     output.mkdir(parents=True, exist_ok=True)
@@ -227,6 +244,7 @@ def write_provider_registrations(
                 mode=mode,
                 project_root=project_root,
                 python_executable=python_executable,
+                batch_label=batch_label,
             )
             destination.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
             written.append(destination)
