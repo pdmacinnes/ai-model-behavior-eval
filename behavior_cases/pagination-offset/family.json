@@ -75,9 +75,18 @@
           "surface_signature": "page-two-repeats-page-one"
         },
         "mutation_proof": {
-          "path": "app/orders/page.tsx",
-          "before": "await getOrders()",
-          "after": "await getOrders(page)",
+          "replacements": [
+            {
+              "path": "app/orders/page.tsx",
+              "before": "await getOrders()",
+              "after": "await getOrders(page)"
+            },
+            {
+              "path": "lib/orders.ts",
+              "before": "export async function getOrders() {\n  return fetch('/api/orders?page=1').then((r) => r.json());\n}\n",
+              "after": "export async function getOrders(page: number) {\n  return fetch(`/api/orders?page=${page}`).then((r) => r.json());\n}\n"
+            }
+          ],
           "preserves_surface_signature": true
         }
       }

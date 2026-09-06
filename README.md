@@ -18,7 +18,7 @@ The pilot contains three paired case families:
 - `session-refresh-role` - stale session data versus an authorization guard
 - `pagination-offset` - client offset mismatch versus server page normalization
 
-Each family has the same relevant visible symptom across variants, at least two plausible hypotheses, discriminating evidence, a bounded tool protocol, and a hidden verifier declaration. The current proof uses deterministic policies only; it does not invoke a real model.
+Each family has the same relevant visible symptom across variants, at least two plausible hypotheses, discriminating evidence, a bounded tool protocol, and a hidden verifier declaration. The dependency-free fixture calibration now executes the pre-fix failure, applies the declared mutation in memory, and checks the post-fix invariant. The current proof uses deterministic policies only; it does not invoke a real model.
 
 ## Run locally
 
@@ -38,4 +38,4 @@ The validation and proof commands are designed to run unattended. The unattended
 
 The public protocol records observable tool use, edits, checkpoints, verifier outcomes, and termination state. It does not request or store private chain-of-thought. A model identity is reported exactly as registered, including any mediated agent or model-selection label; results are not generalized to a raw provider model unless that identity is directly established.
 
-The approved design is in [specs/evidence-bounded-debugging-behavior-study.md](specs/evidence-bounded-debugging-behavior-study.md). Real model adapters, calibration fixtures, and sanitized public release artifacts are subsequent implementation phases.
+The approved design is in [specs/evidence-bounded-debugging-behavior-study.md](specs/evidence-bounded-debugging-behavior-study.md). The current fixtures are dependency-free semantic checks over TypeScript/TSX snapshots, not a full Next.js server. Real model adapters, workspace materialization, and sanitized public release artifacts are subsequent implementation phases.

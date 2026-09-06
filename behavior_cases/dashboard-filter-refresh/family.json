@@ -86,9 +86,18 @@
           "surface_signature": "filter-url-updates-chart-stale-until-refresh"
         },
         "mutation_proof": {
-          "path": "app/dashboard/page.tsx",
-          "before": "await getMetrics()",
-          "after": "await getMetrics(params.range)",
+          "replacements": [
+            {
+              "path": "app/dashboard/page.tsx",
+              "before": "await getMetrics()",
+              "after": "await getMetrics(params.range)"
+            },
+            {
+              "path": "lib/fetchMetrics.ts",
+              "before": "export async function getMetrics() {\n  return fetch('/api/metrics', { cache: 'no-store' }).then((response) => response.json());\n}\n",
+              "after": "export async function getMetrics(range: string) {\n  return fetch(`/api/metrics?range=${range}`, { cache: 'no-store' }).then((response) => response.json());\n}\n"
+            }
+          ],
           "preserves_surface_signature": true
         }
       }

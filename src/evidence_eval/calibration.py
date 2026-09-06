@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from typing import Any
 
+from .fixtures import authoritative_verify, apply_declared_mutation, run_visible_fixture
 from .schema import CaseFamily, CaseVariant
 
 
-def _calibrate_variant(variant: CaseVariant) -> dict[str, Any]:
+def _calibrate_variant(family: CaseFamily, variant: CaseVariant) -> dict[str, Any]:
     errors: list[str] = []
     calibration = variant.calibration
     visible = calibration.get("visible_test", {})
@@ -18,25 +19,28 @@ def _calibrate_variant(variant: CaseVariant) -> dict[str, Any]:
     if not visible.get("test_id"):
         errors.append("visible_test.test_id is required")
 
-    path = mutation.get("path")
-    before = mutation.get("before")
-    after = mutation.get("after")
-    replacement_preview_valid = False
-    before_occurrences = 0
-    if not isinstance(path, str) or path not in variant.files:
-        errors.append("mutation_proof.path must identify a case file")
-    elif not isinstance(before, str) or not before:
-        errors.append("mutation_proof.before is required")
-    else:
-        before_occurrences = variant.files[path].count(before)
-        if before_occurrences != 1:
-            errors.append("mutation_proof.before must occur exactly once in its source file")
-        elif not isinstance(after, str) or not after or after == before:
-            errors.append("mutation_proof.after must be a distinct non-empty replacement")
-        else:
-            preview = variant.files[path].replace(before, after, 1)
-            replacement_preview_valid = preview != variant.files[path] and after in preview
+    try:
+        before = run_visible_fixture(family, variant, variant.files)
+    except (KeyError, ValueError) as exc:
+        errors.append(f"fixture setup failed before mutation: {exc}")
+        before = None
+    if before is not None and before.passed:
+        errors.append("visible fixture unexpectedly passes before the declared fix")
 
+    applied: list[dict[str, Any]] = []
+    after = None
+    verifier: dict[str, Any] = {"status": "not_run"}
+    try:
+        mutated_files, applied = apply_declared_mutation(variant)
+        after = run_visible_fixture(family, variant, mutated_files)
+        verifier = authoritative_verify(family, variant, after)
+    except (KeyError, ValueError) as exc:
+        errors.append(f"fixture mutation failed: {exc}")
+
+    if after is not None and not after.passed:
+        errors.append("visible fixture still fails after the declared mutation")
+    if verifier.get("status") != "passed":
+        errors.append("authoritative verifier did not pass after the declared mutation")
     if mutation.get("preserves_surface_signature") is not True:
         errors.append("mutation_proof must declare preserves_surface_signature=true")
 
@@ -46,25 +50,24 @@ def _calibrate_variant(variant: CaseVariant) -> dict[str, Any]:
         "errors": errors,
         "visible_test": {
             "test_id": visible.get("test_id"),
-            "status": visible.get("status"),
+            "declared_status": visible.get("status"),
+            "before_passed": before.passed if before is not None else None,
+            "after_passed": after.passed if after is not None else None,
             "surface_signature": visible.get("surface_signature"),
         },
         "mutation_proof": {
-            "path": path,
-            "before_occurrences": before_occurrences,
-            "replacement_preview_valid": replacement_preview_valid,
+            "replacement_count": len(applied),
+            "replacement_preview_valid": bool(applied),
             "preserves_surface_signature": mutation.get("preserves_surface_signature"),
+            "applied_paths": [item["path"] for item in applied],
         },
-        "authoritative_verifier": {
-            "expected_cause": variant.verifier.get("expected_cause"),
-            "required_behavior": variant.verifier.get("required_behavior"),
-        },
+        "authoritative_verifier": verifier,
     }
 
 
 def calibrate_case_family(family: CaseFamily) -> dict[str, Any]:
     errors: list[str] = []
-    variants = [_calibrate_variant(variant) for variant in family.variants]
+    variants = [_calibrate_variant(family, variant) for variant in family.variants]
     errors.extend(
         f"{item['variant_id']}: {error}"
         for item in variants
@@ -90,7 +93,7 @@ def calibrate_case_family(family: CaseFamily) -> dict[str, Any]:
     return {
         "family_id": family.family_id,
         "valid": not errors,
-        "calibration_mode": "declarative_preview_only",
+        "calibration_mode": "executable_dependency_free_fixture",
         "errors": errors,
         "visible_test_id": next(iter(test_ids), None),
         "surface_signature": next(iter(signatures), None),
