@@ -5,7 +5,7 @@ The trusted `run_workspace_trial` API accepts a Python callable for deterministi
 The child process receives one JSONL message:
 
 ```json
-{"type":"task","task":{"initial_context":"...","tool_contract":{}}}
+{"type":"task","task":{"prompt":"...","tool_contract":{}}}
 ```
 
 It may then send `call` messages and must wait for one `result` message after each call:
@@ -26,4 +26,6 @@ or an error result. The child terminates the trial with:
 {"type":"final","status":"completed","final_response":"...","metadata":{}}
 ```
 
-The transport removes `PYTHONPATH` and known API-key environment variables, does not send the workspace path, and enforces message and process-time bounds. This is a process boundary, not a complete operating-system sandbox. Provider execution still needs a separate OS/container/network policy before being treated as untrusted.
+The child may report only behavioral statuses (`completed`, `refused`, `insufficient_evidence`, or `stopped`). Infrastructure statuses belong to the parent: an unrecognized child status is recorded as `worker_reported_status` and normalized to `completed`, so a child cannot suppress workspace verification after making an edit. Parent-detected transport failures and timeouts remain infrastructure-censored.
+
+The transport removes `PYTHONPATH` and known API-key environment variables, does not send the workspace path, enforces message, pending-output, and process-time bounds, and does not accept a custom child working directory. The subprocess timeout must be shorter than the enclosing workspace-runner timeout. This is a process boundary, not a complete operating-system sandbox. Provider execution still needs a separate OS/container/network policy before being treated as untrusted.

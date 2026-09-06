@@ -374,6 +374,11 @@ def run_workspace_trial(
         raise ValueError("variant does not belong to the supplied case family")
     if condition.prompt != family.initial_context.get("prompt"):
         raise ValueError("condition prompt must match the case's frozen prompt")
+    if adapter_timeout_seconds <= 0:
+        raise ValueError("workspace adapter timeout must be positive")
+    subprocess_timeout = getattr(adapter, "timeout_seconds", None)
+    if isinstance(subprocess_timeout, (int, float)) and subprocess_timeout >= adapter_timeout_seconds:
+        raise ValueError("subprocess adapter timeout must be shorter than the workspace runner timeout")
     resolved_run_id = _safe_run_id(run_id or str(uuid.uuid4()))
     workspace_parent.mkdir(parents=True, exist_ok=True)
     workspace: Path | None = None

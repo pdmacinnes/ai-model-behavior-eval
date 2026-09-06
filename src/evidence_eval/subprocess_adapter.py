@@ -13,8 +13,8 @@ import queue
 import subprocess
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 from cursor_eval.adapters import _clean_agent_env
@@ -27,8 +27,11 @@ from .workspace_runner import WorkspaceTools
 class SubprocessAdapterConfig:
     command: tuple[str, ...]
     timeout_seconds: float = 300.0
-    cwd: Path | None = None
     max_message_chars: int = 32_000
+    max_pending_messages: int = 128
+
+
+_WORKER_BEHAVIOR_STATUSES = frozenset({"completed", "refused", "insufficient_evidence", "stopped"})
 
 
 class SubprocessWorkspaceAdapter:
@@ -41,7 +44,13 @@ class SubprocessWorkspaceAdapter:
             raise ValueError("subprocess adapter timeout must be positive")
         if config.max_message_chars <= 0:
             raise ValueError("subprocess adapter message bound must be positive")
+        if config.max_pending_messages <= 0:
+            raise ValueError("subprocess adapter pending-message bound must be positive")
         self.config = config
+
+    @property
+    def timeout_seconds(self) -> float:
+        return self.config.timeout_seconds
 
     def __call__(self, task: dict[str, Any], tools: WorkspaceTools) -> AgentResult:
         return self.run(task, tools)
@@ -64,7 +73,6 @@ class SubprocessWorkspaceAdapter:
         try:
             process = subprocess.Popen(
                 list(self.config.command),
-                cwd=self.config.cwd,
                 env=env,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
@@ -75,26 +83,53 @@ class SubprocessWorkspaceAdapter:
         except OSError as exc:
             return AgentResult(status="adapter_error", error=f"could not start subprocess adapter: {type(exc).__name__}: {exc}")
 
-        messages: queue.Queue[tuple[str, str | None]] = queue.Queue()
+        messages: queue.Queue[tuple[str, str | None]] = queue.Queue(maxsize=self.config.max_pending_messages)
+        output_overflow = threading.Event()
+        line_overflow = threading.Event()
 
         def read_stream(name: str, stream) -> None:
             try:
-                for line in stream:
-                    messages.put((name, line))
+                while True:
+                    line = stream.readline(self.config.max_message_chars + 2)
+                    if not line:
+                        break
+                    if len(line.rstrip("\r\n")) > self.config.max_message_chars:
+                        line_overflow.set()
+                        return
+                    try:
+                        messages.put_nowait((name, line))
+                    except queue.Full:
+                        output_overflow.set()
+                        return
             finally:
-                messages.put((f"{name}_eof", None))
+                try:
+                    messages.put_nowait((f"{name}_eof", None))
+                except queue.Full:
+                    output_overflow.set()
 
         stdout_thread = threading.Thread(target=read_stream, args=("stdout", process.stdout), daemon=True)
         stderr_thread = threading.Thread(target=read_stream, args=("stderr", process.stderr), daemon=True)
         stdout_thread.start()
         stderr_thread.start()
-        stderr_lines: list[str] = []
+        stderr_lines: deque[str] = deque(maxlen=128)
         started = time.monotonic()
         final: AgentResult | None = None
         try:
             self._send(process, {"type": "task", "task": task})
             deadline = started + self.config.timeout_seconds
             while final is None:
+                if line_overflow.is_set():
+                    return AgentResult(
+                        status="adapter_error",
+                        error="subprocess adapter response exceeded bound",
+                        metadata={"stderr": "".join(stderr_lines)[-4000:]},
+                    )
+                if output_overflow.is_set():
+                    return AgentResult(
+                        status="adapter_error",
+                        error="subprocess adapter output queue exceeded bound",
+                        metadata={"stderr": "".join(stderr_lines)[-4000:]},
+                    )
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     return AgentResult(
@@ -118,8 +153,6 @@ class SubprocessWorkspaceAdapter:
                 if stream_name == "stderr":
                     stderr_lines.append(line)
                     continue
-                if len(line.rstrip("\r\n")) > self.config.max_message_chars:
-                    return AgentResult(status="adapter_error", error="subprocess adapter response exceeded bound")
                 try:
                     message = json.loads(line)
                 except json.JSONDecodeError as exc:
@@ -128,19 +161,28 @@ class SubprocessWorkspaceAdapter:
                     return AgentResult(status="adapter_error", error="subprocess adapter message must be an object")
                 message_type = message.get("type")
                 if message_type == "final":
-                    status = str(message.get("status", "completed"))
+                    reported_status = str(message.get("status", "completed"))
                     response = str(message.get("final_response", ""))
                     metadata = message.get("metadata", {})
+                    worker_metadata = dict(metadata) if isinstance(metadata, dict) else {}
+                    if reported_status not in _WORKER_BEHAVIOR_STATUSES:
+                        worker_metadata["worker_reported_status"] = reported_status
+                        if message.get("error") is not None:
+                            worker_metadata["worker_reported_error"] = str(message["error"])
+                        status = "completed"
+                        error = None
+                    else:
+                        status = reported_status
+                        error = str(message["error"]) if message.get("error") is not None else None
                     final = AgentResult(
                         status=status,
                         final_response=response,
-                        metadata=dict(metadata) if isinstance(metadata, dict) else {},
-                        error=str(message["error"]) if message.get("error") is not None else None,
+                        metadata=worker_metadata,
+                        error=error,
                     )
                     break
                 if message_type != "call":
-                    self._send(process, {"type": "error", "error": "expected call or final message"})
-                    continue
+                    return AgentResult(status="adapter_error", error="subprocess adapter expected call or final message")
                 call_id = str(message.get("id", ""))
                 method = message.get("method")
                 arguments = message.get("arguments", {})
