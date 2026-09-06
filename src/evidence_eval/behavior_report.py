@@ -98,6 +98,9 @@ def _behavior_from_run(run_dir: Path) -> dict[str, Any]:
             raise BehaviorReportError("event trace must be an object")
         if not trace.get("events") and isinstance(trace.get("trace"), dict):
             trace = trace["trace"]
+        events = trace.get("events", [])
+        if not isinstance(events, list) or not all(isinstance(event, dict) for event in events):
+            raise BehaviorReportError("event trace events must be a list of objects")
         return _project_behavior(analyze_trace(trace))
 
     annotations_path = run_dir / "behavioral_annotations.json"
@@ -121,10 +124,13 @@ def _condition_metadata(condition_id: Any, condition: Any) -> dict[str, Any]:
 
 
 def _merge_trial_metadata(manifest: dict[str, Any], batch_id: str) -> dict[str, dict[str, Any]]:
+    raw_conditions = manifest.get("conditions", [])
+    if not isinstance(raw_conditions, list) or not all(isinstance(item, dict) for item in raw_conditions):
+        raise BehaviorReportError(f"batch {batch_id} has malformed conditions")
     conditions = {
         item.get("condition_id"): item
-        for item in manifest.get("conditions", [])
-        if isinstance(item, dict) and isinstance(item.get("condition_id"), str)
+        for item in raw_conditions
+        if isinstance(item.get("condition_id"), str)
     }
     metadata: dict[str, dict[str, Any]] = {}
     for source_name in ("planned_trials", "results"):
@@ -168,8 +174,8 @@ def _load_batch_metadata(source_root: Path) -> tuple[dict[str, dict[str, Any]], 
             raise BehaviorReportError(f"batch {batch_dir.name} has an invalid batch id")
         batch_ids.append(batch_id)
         for run_id, metadata in _merge_trial_metadata(manifest, batch_id).items():
-            if run_id in by_run and by_run[run_id].get("batch_id") != batch_id:
-                raise BehaviorReportError(f"run id appears in multiple batches: {run_id}")
+            if run_id in by_run:
+                raise BehaviorReportError(f"run id appears in multiple batch manifests: {run_id}")
             by_run[run_id] = metadata
     return by_run, sorted(set(batch_ids))
 

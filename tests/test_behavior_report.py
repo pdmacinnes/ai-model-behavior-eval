@@ -215,6 +215,18 @@ class BehavioralReportTests(unittest.TestCase):
             with self.assertRaises(BehaviorReportError):
                 build_behavior_report(root, source_kind="internal_artifacts")
 
+    def test_malformed_batch_metadata_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            _write_json(
+                root / "batches" / "batch-a" / "manifest.json",
+                {"schema": "evidence-bounded-debugging-batch-v1", "batch_id": "batch-a", "conditions": "not-a-list"},
+            )
+            (root / "runs").mkdir(parents=True)
+
+            with self.assertRaises(BehaviorReportError):
+                build_behavior_report(root, source_kind="internal_artifacts")
+
 
 if __name__ == "__main__":
     unittest.main()
