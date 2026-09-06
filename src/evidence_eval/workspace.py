@@ -45,6 +45,21 @@ def _validate_relative_path(relative: str) -> None:
         raise WorkspaceMaterializationError(f"unsafe workspace path: {relative!r}")
 
 
+def _is_link(path: Path) -> bool:
+    is_junction = getattr(path, "is_junction", None)
+    return path.is_symlink() or bool(is_junction and is_junction())
+
+
+def _has_link_component(path: Path) -> bool:
+    absolute = path.absolute()
+    current = Path(absolute.anchor)
+    for part in absolute.parts[1:]:
+        current /= part
+        if _is_link(current):
+            return True
+    return False
+
+
 def _manifest_sha256(manifest: dict[str, dict[str, Any]]) -> str:
     payload = json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
@@ -56,6 +71,8 @@ def materialize_variant(variant: CaseVariant, destination: Path) -> Materialized
     Hidden causes, hypotheses, observations, verifier declarations, and calibration
     metadata are available to the harness but are never written into the workspace.
     """
+    if _has_link_component(destination):
+        raise WorkspaceMaterializationError(f"workspace destination contains a symlink or junction: {destination}")
     if destination.exists():
         if destination.is_symlink() or not destination.is_dir():
             raise WorkspaceMaterializationError(f"workspace destination is not a directory: {destination}")
@@ -69,13 +86,14 @@ def materialize_variant(variant: CaseVariant, destination: Path) -> Materialized
         if not isinstance(relative, str) or not isinstance(content, str):
             raise WorkspaceMaterializationError("workspace files must map string paths to string contents")
         _validate_relative_path(relative)
-        target = (root / Path(relative)).resolve()
+        candidate = root / Path(relative)
+        if _has_link_component(candidate):
+            raise WorkspaceMaterializationError(f"workspace path contains a symlink or junction: {relative!r}")
+        target = candidate.resolve()
         try:
             target.relative_to(root)
         except ValueError as exc:
             raise WorkspaceMaterializationError(f"workspace path escapes destination: {relative!r}") from exc
-        if target.exists() and target.is_symlink():
-            raise WorkspaceMaterializationError(f"workspace target is a symlink: {relative!r}")
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8", newline="\n")
 

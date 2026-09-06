@@ -8,6 +8,7 @@ def sanitize_public_trace(record: dict[str, Any]) -> dict[str, Any]:
     """Remove answer-key annotations before a trace is copied into a public release."""
     sanitized = deepcopy(record)
     sanitized["variant_id"] = "redacted"
+    sanitized.pop("revealed_factors", None)
     for event in sanitized.get("events", []):
         event.pop("reveals", None)
     annotations = sanitized.get("behavioral_annotations")

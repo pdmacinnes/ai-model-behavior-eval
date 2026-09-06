@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from evidence_eval.public import sanitize_public_case_family, sanitize_public_run, sanitize_public_trace
+from evidence_eval.public import sanitize_public_artifact, sanitize_public_case_family, sanitize_public_run, sanitize_public_trace
 
 
 class PublicSanitizerTests(unittest.TestCase):
@@ -14,6 +14,12 @@ class PublicSanitizerTests(unittest.TestCase):
         sanitized = sanitize_public_trace(trace)
         self.assertEqual(sanitized["variant_id"], "redacted")
         self.assertNotIn("reveals", sanitized["events"][0])
+
+    def test_annotations_artifact_sanitizer_removes_top_level_answer_keys(self):
+        annotations = {"revealed_factors": ["query propagation"], "first_action": "trace"}
+        sanitized = sanitize_public_artifact("behavioral_annotations.json", annotations)
+        self.assertNotIn("revealed_factors", sanitized)
+        self.assertEqual(sanitized["first_action"], "trace")
 
     def test_run_sanitizer_removes_verifier_declaration(self):
         run = {

@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from dataclasses import replace
+import os
 from pathlib import Path
 
 from evidence_eval.schema import load_case_family
@@ -44,6 +45,27 @@ class WorkspaceMaterializationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaises(WorkspaceMaterializationError):
                 materialize_variant(unsafe, Path(directory) / "workspace")
+
+    def test_materializer_rejects_symlink_destination_and_target(self):
+        family = load_case_family(ROOT / "behavior_cases" / "dashboard-filter-refresh" / "family.json")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            real_destination = root / "real"
+            real_destination.mkdir()
+            linked_destination = root / "linked"
+            try:
+                os.symlink(real_destination, linked_destination, target_is_directory=True)
+            except (OSError, NotImplementedError):
+                self.skipTest("symlink creation is unavailable")
+            with self.assertRaises(WorkspaceMaterializationError):
+                materialize_variant(family.variants[0], linked_destination)
+
+            linked_parent_target = root / "parent-target"
+            linked_parent_target.mkdir()
+            linked_parent = root / "parent-link"
+            os.symlink(linked_parent_target, linked_parent, target_is_directory=True)
+            with self.assertRaises(WorkspaceMaterializationError):
+                materialize_variant(family.variants[0], linked_parent / "workspace")
 
 
 if __name__ == "__main__":
