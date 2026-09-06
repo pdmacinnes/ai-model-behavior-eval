@@ -5,6 +5,16 @@ from .calibration import calibrate_case_family
 from .case_validation import validate_case_family
 from .protocol import EvidenceSession
 from .public import sanitize_public_run, sanitize_public_trace
+from .pilot import (
+    PILOT_BATCH_MANIFEST_SCHEMA,
+    PILOT_REGISTRATION_SCHEMA,
+    PilotCondition,
+    PilotRegistration,
+    PilotRegistrationError,
+    load_pilot_registration,
+    plan_pilot_trials,
+    run_pilot_batch,
+)
 from .runner import AgentResult, EvidenceTools, ModelCondition, run_unattended_trial, tool_contract
 from .schema import CaseFamily, CaseVariant, ToolObservation, load_case_family
 from .subprocess_adapter import SubprocessAdapterConfig, SubprocessWorkspaceAdapter
@@ -31,6 +41,14 @@ __all__ = [
     "run_unattended_trial",
     "sanitize_public_run",
     "sanitize_public_trace",
+    "PILOT_BATCH_MANIFEST_SCHEMA",
+    "PILOT_REGISTRATION_SCHEMA",
+    "PilotCondition",
+    "PilotRegistration",
+    "PilotRegistrationError",
+    "load_pilot_registration",
+    "plan_pilot_trials",
+    "run_pilot_batch",
     "tool_contract",
     "load_case_family",
     "validate_case_family",

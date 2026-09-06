@@ -24,7 +24,17 @@ def build(cases_root: Path, output_root: Path, artifacts_root: Path | None = Non
         case_count += 1
 
     run_count = 0
+    batch_count = 0
     if artifacts_root is not None and artifacts_root.exists():
+        for batch_dir in sorted(path for path in (artifacts_root / "batches").glob("*") if path.is_dir()):
+            source = batch_dir / "manifest.json"
+            if not source.is_file():
+                continue
+            sanitized = sanitize_public_artifact("manifest.json", _read_json(source))
+            destination = output_root / "batches" / batch_dir.name / "manifest.json"
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_text(json.dumps(sanitized, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
+            batch_count += 1
         for run_dir in sorted(path for path in artifacts_root.glob("runs/*") if path.is_dir()):
             for source in sorted(run_dir.glob("*.json")):
                 sanitized = sanitize_public_artifact(source.name, _read_json(source))
@@ -38,6 +48,7 @@ def build(cases_root: Path, output_root: Path, artifacts_root: Path | None = Non
         "sanitizer_version": "1",
         "case_count": case_count,
         "run_count": run_count,
+        "batch_count": batch_count,
         "answer_key_fields_removed": ["hidden_cause", "verifier", "calibration", "reveals", "revealed_factors"],
     }
     output_root.mkdir(parents=True, exist_ok=True)

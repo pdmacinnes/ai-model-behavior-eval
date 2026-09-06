@@ -385,6 +385,7 @@ def run_workspace_trial(
     channel_id: str | None = None
     worker: threading.Thread | None = None
     timed_out = False
+    cleanup_deferred = False
     try:
         workspace = Path(tempfile.mkdtemp(prefix=f"{family.family_id}-{resolved_run_id}-", dir=workspace_parent))
         materialized: MaterializedWorkspace = materialize_variant(variant, workspace)
@@ -420,6 +421,14 @@ def run_workspace_trial(
         worker_alive = worker.is_alive()
         timed_out = worker_alive
         if worker_alive:
+            terminate = getattr(adapter, "terminate", None)
+            if callable(terminate):
+                try:
+                    terminate()
+                except Exception:
+                    pass
+                worker.join(timeout=0.5)
+            cleanup_deferred = worker.is_alive()
             result = AgentResult(status="adapter_timeout", error=f"adapter exceeded {adapter_timeout_seconds:.3f}s")
             session.stop("adapter timeout")
         elif "error" in failures:
@@ -475,8 +484,14 @@ def run_workspace_trial(
             "verifier_result": verifier_result.to_dict(),
             "initial_workspace_manifest_sha256": materialized.manifest_sha256,
             "final_workspace_manifest_sha256": _hash_json(final_manifest),
-            "workspace_cleanup_deferred": timed_out,
-            "workspace_cleanup_reason": "adapter_thread_alive_after_timeout" if timed_out else None,
+            "workspace_cleanup_deferred": cleanup_deferred,
+            "workspace_cleanup_reason": (
+                "adapter_thread_alive_after_timeout"
+                if cleanup_deferred
+                else "adapter_terminated_after_timeout"
+                if timed_out
+                else None
+            ),
         }
         artifacts = {
             "run.json": run_record,
@@ -498,7 +513,7 @@ def run_workspace_trial(
         if channel_id is not None:
             with _WORKSPACE_CHANNEL_LOCK:
                 _WORKSPACE_CHANNELS.pop(channel_id, None)
-        if workspace is not None and not timed_out:
+        if workspace is not None and not cleanup_deferred:
             try:
                 shutil.rmtree(workspace)
             except OSError:

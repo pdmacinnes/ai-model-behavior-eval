@@ -27,6 +27,12 @@ class PublicReleaseTests(unittest.TestCase):
             root = Path(directory)
             artifacts = root / "artifacts" / "runs" / "run-1"
             artifacts.mkdir(parents=True)
+            batch = root / "artifacts" / "batches" / "batch-1"
+            batch.mkdir(parents=True)
+            (batch / "manifest.json").write_text(
+                json.dumps({"schema": "evidence-bounded-debugging-batch-v1", "batch_id": "batch-1"}),
+                encoding="utf-8",
+            )
             (artifacts / "run.json").write_text(
                 json.dumps({"variant_id": "secret", "verifier_result": {"status": "declarative_only", "declaration": {"expected_cause": "secret"}}}),
                 encoding="utf-8",
@@ -44,6 +50,8 @@ class PublicReleaseTests(unittest.TestCase):
             manifest = builder.build(ROOT / "behavior_cases", output, root / "artifacts")
 
             self.assertEqual(manifest["run_count"], 1)
+            self.assertEqual(manifest["batch_count"], 1)
+            self.assertTrue((output / "batches" / "batch-1" / "manifest.json").exists())
             public_annotations = json.loads((output / "runs" / "run-1" / "behavioral_annotations.json").read_text(encoding="utf-8"))
             self.assertNotIn("revealed_factors", public_annotations)
             public_trace = json.loads((output / "runs" / "run-1" / "event_trace.json").read_text(encoding="utf-8"))

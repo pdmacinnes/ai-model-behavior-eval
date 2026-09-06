@@ -29,14 +29,17 @@ $env:PYTHONPATH = 'src'
 python scripts/validate_behavior_cases.py
 python scripts/run_behavior_proof.py
 python scripts/run_unattended_proof.py
+python scripts/run_reference_pilot.py --batch-id reference-smoke-v1 --repetitions 3 --output-root results/reference-pilot-smoke
 python scripts/build_public_behavior_release.py --cases-root behavior_cases --output-root results/public-release
 python -m unittest discover -s tests -v
 ```
 
 The validation and proof commands are designed to run unattended. The unattended proof writes immutable artifacts under `results/unattended-proof/`, which is ignored as local run output. Unsupported actions, budget violations, malformed checkpoints, and other protocol failures are returned deterministically and recorded in the trace. Workspace adapter timeouts are infrastructure-censored (`infrastructure_censored=true`): verification is skipped and the live workspace is retained rather than being deleted while an in-process adapter may still be running.
 
+The reference pilot command runs 18 credential-free subprocess trials across the three families, both variants, and three repetitions. Its worker intentionally does not patch the cases, so verifier failures in that smoke batch are expected; the smoke is green when the trials complete without infrastructure censorship and the immutable artifacts can be sanitized. Registered model conditions can be run with `scripts/run_model_pilot.py` after their JSONL workers are available.
+
 ## Scope and limitations
 
 The public protocol records observable tool use, edits, checkpoints, verifier outcomes, and termination state. It does not request or store private chain-of-thought. Internal traces retain answer-key annotations for analysis, while [public sanitizers](src/evidence_eval/public.py) remove them before release. A model identity is reported exactly as registered, including any mediated agent or model-selection label; results are not generalized to a raw provider model unless that identity is directly established. `execution_status` describes adapter lifecycle; verifier pass/fail is recorded separately in `verifier_result`.
 
-The approved design is in [specs/evidence-bounded-debugging-behavior-study.md](specs/evidence-bounded-debugging-behavior-study.md). The current fixtures are dependency-free semantic checks over TypeScript/TSX snapshots, not a full Next.js server. The harness now includes a safe visible-file materializer, a workspace trial runner with runner-owned verifier invocation, separate source-level verifiers for the six pilot variants, and a JSONL subprocess adapter boundary. Provider adapters, a full Next.js runtime verifier, and OS-level sandbox/network policy remain subsequent implementation phases. The public release builder produces sanitized case packs and run artifacts.
+The approved design is in [specs/evidence-bounded-debugging-behavior-study.md](specs/evidence-bounded-debugging-behavior-study.md), and the current batch milestone is in [specs/model-pilot-batch.md](specs/model-pilot-batch.md). The current fixtures are dependency-free semantic checks over TypeScript/TSX snapshots, not a full Next.js server. The harness now includes a safe visible-file materializer, a workspace trial runner with runner-owned verifier invocation, separate source-level verifiers for the six pilot variants, a JSONL subprocess adapter boundary, and an unattended provider-neutral pilot batch runner. Provider adapters, a full Next.js runtime verifier, and OS-level sandbox/network policy remain subsequent implementation phases. The public release builder produces sanitized case packs, run artifacts, and publishable batch manifests.

@@ -47,6 +47,8 @@ class SubprocessWorkspaceAdapter:
         if config.max_pending_messages <= 0:
             raise ValueError("subprocess adapter pending-message bound must be positive")
         self.config = config
+        self._process_lock = threading.Lock()
+        self._active_process: subprocess.Popen[str] | None = None
 
     @property
     def timeout_seconds(self) -> float:
@@ -67,6 +69,29 @@ class SubprocessWorkspaceAdapter:
         process.stdin.write(self._encode(value))
         process.stdin.flush()
 
+    @staticmethod
+    def _terminate_process(process: subprocess.Popen[str]) -> None:
+        if process.poll() is None:
+            try:
+                process.terminate()
+                process.wait(timeout=0.5)
+            except (OSError, subprocess.TimeoutExpired):
+                try:
+                    process.kill()
+                except OSError:
+                    pass
+                try:
+                    process.wait(timeout=0.5)
+                except (OSError, subprocess.TimeoutExpired):
+                    pass
+
+    def terminate(self) -> None:
+        """Terminate the active child when the enclosing runner times out."""
+        with self._process_lock:
+            process = self._active_process
+        if process is not None:
+            self._terminate_process(process)
+
     def run(self, task: dict[str, Any], tools: WorkspaceTools) -> AgentResult:
         env = _clean_agent_env()
         env.pop("PYTHONPATH", None)
@@ -82,6 +107,8 @@ class SubprocessWorkspaceAdapter:
             )
         except OSError as exc:
             return AgentResult(status="adapter_error", error=f"could not start subprocess adapter: {type(exc).__name__}: {exc}")
+        with self._process_lock:
+            self._active_process = process
 
         messages: queue.Queue[tuple[str, str | None]] = queue.Queue(maxsize=self.config.max_pending_messages)
         output_overflow = threading.Event()
@@ -140,6 +167,12 @@ class SubprocessWorkspaceAdapter:
                 try:
                     stream_name, line = messages.get(timeout=min(remaining, 0.25))
                 except queue.Empty:
+                    if process.poll() is not None:
+                        return AgentResult(
+                            status="adapter_error",
+                            error="subprocess adapter exited without a final message",
+                            metadata={"stderr": "".join(stderr_lines)[-4000:]},
+                        )
                     continue
                 if line is None:
                     if stream_name == "stdout_eof":
@@ -206,19 +239,7 @@ class SubprocessWorkspaceAdapter:
                     process.stdin.close()
                 except OSError:
                     pass
-            if process.poll() is None:
-                try:
-                    process.terminate()
-                    process.wait(timeout=0.5)
-                except (OSError, subprocess.TimeoutExpired):
-                    try:
-                        process.kill()
-                    except OSError:
-                        pass
-                    try:
-                        process.wait(timeout=0.5)
-                    except (OSError, subprocess.TimeoutExpired):
-                        pass
+            self._terminate_process(process)
             stdout_thread.join(timeout=0.5)
             stderr_thread.join(timeout=0.5)
             for stream in (process.stdout, process.stderr):
@@ -227,6 +248,9 @@ class SubprocessWorkspaceAdapter:
                         stream.close()
                     except OSError:
                         pass
+            with self._process_lock:
+                if self._active_process is process:
+                    self._active_process = None
 
     @staticmethod
     def _dispatch(method: Any, arguments: dict[str, Any], tools: WorkspaceTools) -> dict[str, Any]:

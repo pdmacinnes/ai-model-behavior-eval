@@ -267,6 +267,45 @@ class WorkspaceRunnerTests(unittest.TestCase):
             self.assertTrue(list((root / "workspaces").iterdir()))
             time.sleep(0.2)
 
+    def test_parent_timeout_terminates_adapter_when_supported(self):
+        family = load_case_family(ROOT / "behavior_cases" / "dashboard-filter-refresh" / "family.json")
+        condition = ModelCondition(
+            provider="deterministic",
+            model_id="workspace-parent-timeout",
+            adapter_id="test-workspace",
+            prompt=family.initial_context["prompt"],
+        )
+        terminated = {"called": False}
+
+        def adapter(task, tools):
+            while not terminated["called"]:
+                time.sleep(0.005)
+            return AgentResult(status="completed")
+
+        def terminate():
+            terminated["called"] = True
+
+        adapter.terminate = terminate
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            record = run_workspace_trial(
+                family,
+                family.variants[0],
+                condition,
+                adapter,
+                artifacts_root=root / "artifacts",
+                workspace_parent=root / "workspaces",
+                run_id="parent-timeout-run",
+                adapter_timeout_seconds=0.01,
+            )
+            self.assertTrue(terminated["called"])
+            self.assertEqual(record["execution_status"], "adapter_timeout")
+            self.assertTrue(record["infrastructure_censored"])
+            self.assertFalse(record["workspace_cleanup_deferred"])
+            self.assertEqual(record["workspace_cleanup_reason"], "adapter_terminated_after_timeout")
+            self.assertEqual(list((root / "workspaces").iterdir()), [])
+
     def test_materialization_failure_cleans_up_temporary_workspace(self):
         family = load_case_family(ROOT / "behavior_cases" / "dashboard-filter-refresh" / "family.json")
         unsafe = replace(family.variants[0], files={"../outside.ts": "export const bad = true;"})
