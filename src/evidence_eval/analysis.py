@@ -35,20 +35,23 @@ def analyze_trace(record: dict[str, Any]) -> dict[str, Any]:
 
 
 def compare_variants(first: dict[str, Any], second: dict[str, Any]) -> dict[str, Any]:
-    fields = (
+    decision_fields = (
         "first_action",
         "first_target",
         "action_sequence",
         "first_edit_target",
         "leading_hypotheses",
         "confidence_sequence",
-        "revealed_factors",
     )
-    changed = [field for field in fields if first.get(field) != second.get(field)]
+    environment_fields = ("revealed_factors", "rejected_action_count", "remaining_cost")
+    changed = [field for field in decision_fields if first.get(field) != second.get(field)]
+    environment_changed = [field for field in environment_fields if first.get(field) != second.get(field)]
     return {
         "first_variant": first.get("variant_id"),
         "second_variant": second.get("variant_id"),
         "changed_fields": changed,
         "behavior_changed": bool(changed),
+        "environment_changed_fields": environment_changed,
+        "environment_changed": bool(environment_changed),
         "comparison_is_causal_only_if_pre_registered": True,
     }

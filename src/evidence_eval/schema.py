@@ -59,6 +59,8 @@ class CaseFamily:
     allowed_actions: tuple[str, ...]
     action_costs: dict[str, int]
     max_cost: int
+    max_events: int
+    max_response_chars: int
     perturbations: tuple[dict[str, Any], ...]
     variants: tuple[CaseVariant, ...]
     canonical_sha256: str
@@ -98,6 +100,8 @@ def load_case_family(path: Path) -> CaseFamily:
         allowed_actions=tuple(str(item) for item in raw["allowed_actions"]),
         action_costs={str(key): int(value) for key, value in raw["action_costs"].items()},
         max_cost=int(raw["max_cost"]),
+        max_events=int(raw.get("max_events", 32)),
+        max_response_chars=int(raw.get("max_response_chars", 4000)),
         perturbations=tuple(dict(item) for item in raw.get("perturbations", [])),
         variants=variants,
         canonical_sha256=hashlib.sha256(_canonical_json(raw)).hexdigest(),

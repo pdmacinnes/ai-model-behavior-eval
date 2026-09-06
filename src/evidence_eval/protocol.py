@@ -14,7 +14,6 @@ class ToolResponse:
     content: str
     cost: int
     remaining_cost: int
-    reveals: tuple[str, ...] = ()
     error: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -25,7 +24,6 @@ class ToolResponse:
             "content": self.content,
             "cost": self.cost,
             "remaining_cost": self.remaining_cost,
-            "reveals": list(self.reveals),
             "error": self.error,
         }
 
@@ -40,11 +38,14 @@ class EvidenceSession:
         self.variant = variant
         self.remaining_cost = family.max_cost
         self.status = "active"
+        self._sealed = False
         self.events: list[dict[str, Any]] = []
         self.checkpoints: list[dict[str, Any]] = []
 
     def request(self, action: str, target: str) -> ToolResponse:
         cost = self.family.action_costs.get(action)
+        if self._sealed:
+            return self._response(action, target, 0, "session is sealed")
         if self.status != "active":
             return self._reject(action, target, 0, "session is no longer active")
         if action not in self.family.allowed_actions or cost is None:
@@ -54,6 +55,11 @@ class EvidenceSession:
         observation = self.variant.observation_for(action, target)
         if observation is None:
             return self._reject(action, target, cost, "unsupported target for this case")
+        if len(observation.content) > self.family.max_response_chars:
+            return self._reject(action, target, cost, "tool output bound exceeded")
+        if len(self.events) >= self.family.max_events:
+            self.status = "event_limit"
+            return self._response(action, target, cost, "event limit exceeded")
         self.remaining_cost -= cost
         response = ToolResponse(
             accepted=True,
@@ -62,9 +68,8 @@ class EvidenceSession:
             content=observation.content,
             cost=cost,
             remaining_cost=self.remaining_cost,
-            reveals=observation.reveals,
         )
-        self.events.append({"kind": "action", **response.to_dict()})
+        self.events.append({"kind": "action", **response.to_dict(), "reveals": list(observation.reveals)})
         return response
 
     def checkpoint(
@@ -76,7 +81,7 @@ class EvidenceSession:
         changed_by: str,
         next_action: str,
     ) -> None:
-        if self.status != "active":
+        if self.status != "active" or self._sealed:
             raise RuntimeError("cannot checkpoint an inactive session")
         if not 0.0 <= confidence <= 1.0:
             raise ValueError("confidence must be between 0 and 1")
@@ -91,10 +96,13 @@ class EvidenceSession:
         self.events.append({"kind": "checkpoint", **checkpoint})
 
     def stop(self, reason: str) -> None:
-        if self.status != "active":
+        if self.status != "active" or self._sealed:
             return
         self.status = "stopped"
         self.events.append({"kind": "stop", "reason": reason, "remaining_cost": self.remaining_cost})
+
+    def seal(self) -> None:
+        self._sealed = True
 
     def record_edit(self, target: str) -> ToolResponse:
         return self.request("edit", target)
@@ -111,7 +119,13 @@ class EvidenceSession:
         }
 
     def _reject(self, action: str, target: str, cost: int, error: str) -> ToolResponse:
-        response = ToolResponse(
+        response = self._response(action, target, cost, error)
+        if not self._sealed:
+            self.events.append({"kind": "rejected_action", **response.to_dict()})
+        return response
+
+    def _response(self, action: str, target: str, cost: int, error: str) -> ToolResponse:
+        return ToolResponse(
             accepted=False,
             action=action,
             target=target,
@@ -120,5 +134,3 @@ class EvidenceSession:
             remaining_cost=self.remaining_cost,
             error=error,
         )
-        self.events.append({"kind": "rejected_action", **response.to_dict()})
-        return response

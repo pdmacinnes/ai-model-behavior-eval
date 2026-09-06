@@ -21,14 +21,21 @@ def _calibrate_variant(variant: CaseVariant) -> dict[str, Any]:
     path = mutation.get("path")
     before = mutation.get("before")
     after = mutation.get("after")
+    replacement_preview_valid = False
+    before_occurrences = 0
     if not isinstance(path, str) or path not in variant.files:
         errors.append("mutation_proof.path must identify a case file")
     elif not isinstance(before, str) or not before:
         errors.append("mutation_proof.before is required")
-    elif variant.files[path].count(before) != 1:
-        errors.append("mutation_proof.before must occur exactly once in its source file")
-    elif not isinstance(after, str) or not after or after == before:
-        errors.append("mutation_proof.after must be a distinct non-empty replacement")
+    else:
+        before_occurrences = variant.files[path].count(before)
+        if before_occurrences != 1:
+            errors.append("mutation_proof.before must occur exactly once in its source file")
+        elif not isinstance(after, str) or not after or after == before:
+            errors.append("mutation_proof.after must be a distinct non-empty replacement")
+        else:
+            preview = variant.files[path].replace(before, after, 1)
+            replacement_preview_valid = preview != variant.files[path] and after in preview
 
     if mutation.get("preserves_surface_signature") is not True:
         errors.append("mutation_proof must declare preserves_surface_signature=true")
@@ -44,7 +51,8 @@ def _calibrate_variant(variant: CaseVariant) -> dict[str, Any]:
         },
         "mutation_proof": {
             "path": path,
-            "replacement_applied": not errors and isinstance(path, str),
+            "before_occurrences": before_occurrences,
+            "replacement_preview_valid": replacement_preview_valid,
             "preserves_surface_signature": mutation.get("preserves_surface_signature"),
         },
         "authoritative_verifier": {
@@ -82,6 +90,7 @@ def calibrate_case_family(family: CaseFamily) -> dict[str, Any]:
     return {
         "family_id": family.family_id,
         "valid": not errors,
+        "calibration_mode": "declarative_preview_only",
         "errors": errors,
         "visible_test_id": next(iter(test_ids), None),
         "surface_signature": next(iter(signatures), None),

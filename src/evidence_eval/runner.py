@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
+import threading
 import time
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
@@ -64,13 +67,17 @@ class EvidenceAdapter(Protocol):
 
 
 class EvidenceTools:
-    """The only interface an adapter needs to investigate one case variant."""
+    """A capability facade that exposes no case or session object to adapters."""
 
-    def __init__(self, session: EvidenceSession) -> None:
-        self._session = session
+    __slots__ = ("__request_impl", "__checkpoint_impl", "__stop_impl")
+
+    def __init__(self, request_impl: Callable[..., ToolResponse], checkpoint_impl: Callable[..., None], stop_impl: Callable[..., None]) -> None:
+        self.__request_impl = request_impl
+        self.__checkpoint_impl = checkpoint_impl
+        self.__stop_impl = stop_impl
 
     def request(self, action: str, target: str) -> ToolResponse:
-        return self._session.request(action, target)
+        return self.__request_impl(action, target)
 
     def checkpoint(
         self,
@@ -81,7 +88,7 @@ class EvidenceTools:
         changed_by: str,
         next_action: str,
     ) -> None:
-        self._session.checkpoint(
+        self.__checkpoint_impl(
             leading_hypothesis=leading_hypothesis,
             alternative_hypothesis=alternative_hypothesis,
             confidence=confidence,
@@ -90,29 +97,69 @@ class EvidenceTools:
         )
 
     def stop(self, reason: str) -> None:
-        self._session.stop(reason)
+        self.__stop_impl(reason)
 
 
 def tool_contract(family: CaseFamily) -> dict[str, Any]:
     return {
         "protocol_version": PROTOCOL_VERSION,
-        "request": {
-            "action": "string from allowed_actions",
-            "target": "string case target",
-            "returns": ["accepted", "content", "cost", "remaining_cost", "reveals", "error"],
-        },
-        "checkpoint": [
-            "leading_hypothesis",
-            "alternative_hypothesis",
-            "confidence",
-            "changed_by",
-            "next_action",
+        "tools": [
+            {
+                "type": "function",
+                "name": "request_evidence",
+                "description": "Request one bounded evidence action for the current debugging task.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "enum": list(family.allowed_actions)},
+                        "target": {"type": "string"},
+                    },
+                    "required": ["action", "target"],
+                    "additionalProperties": False,
+                },
+                "returns": ["accepted", "action", "target", "content", "cost", "remaining_cost", "error"],
+            },
+            {
+                "type": "function",
+                "name": "record_checkpoint",
+                "description": "Record an observable hypothesis checkpoint without requesting hidden reasoning.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "leading_hypothesis": {"type": "string"},
+                        "alternative_hypothesis": {"type": "string"},
+                        "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+                        "changed_by": {"type": "string"},
+                        "next_action": {"type": "string"},
+                    },
+                    "required": ["leading_hypothesis", "alternative_hypothesis", "confidence", "changed_by", "next_action"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "type": "function",
+                "name": "stop_investigation",
+                "description": "End the investigation and record the termination reason.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"reason": {"type": "string"}},
+                    "required": ["reason"],
+                    "additionalProperties": False,
+                },
+            },
         ],
-        "stop": ["reason"],
         "allowed_actions": list(family.allowed_actions),
         "action_costs": dict(sorted(family.action_costs.items())),
         "max_cost": family.max_cost,
+        "max_events": family.max_events,
+        "max_response_chars": family.max_response_chars,
     }
+
+
+def _safe_run_id(value: str) -> str:
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", value):
+        raise ValueError("run_id must contain only letters, numbers, underscore, period, or hyphen")
+    return value
 
 
 def run_unattended_trial(
@@ -123,62 +170,98 @@ def run_unattended_trial(
     *,
     artifacts_root: Path,
     run_id: str | None = None,
+    registration_id: str = "unregistered",
+    adapter_timeout_seconds: float = 60.0,
 ) -> dict[str, Any]:
     if variant.family_id != family.family_id:
         raise ValueError("variant does not belong to the supplied case family")
     if condition.prompt != family.initial_context.get("prompt"):
         raise ValueError("condition prompt must match the case's frozen prompt")
 
-    resolved_run_id = run_id or str(uuid.uuid4())
+    resolved_run_id = _safe_run_id(run_id or str(uuid.uuid4()))
     session = EvidenceSession(family, variant)
-    tools = EvidenceTools(session)
+    tools = EvidenceTools(session.request, session.checkpoint, session.stop)
+    task = dict(family.initial_context)
+    contract = tool_contract(family)
+    task_hash = _hash_json(task)
+    contract_hash = _hash_json(contract)
+    started_at = datetime.now(timezone.utc).isoformat()
     started = time.monotonic()
-    try:
-        task = dict(family.initial_context)
-        task["family_id"] = family.family_id
-        task["variant_id"] = variant.variant_id
-        result = adapter(task, tools)
-        if not isinstance(result, AgentResult):
-            raise TypeError("evidence adapters must return AgentResult")
-    except Exception as exc:  # Adapter failures are data, not interactive prompts.
+    holder: dict[str, AgentResult] = {}
+    failures: dict[str, BaseException] = {}
+
+    def invoke() -> None:
+        try:
+            candidate = adapter(task, tools)
+            if not isinstance(candidate, AgentResult):
+                raise TypeError("evidence adapters must return AgentResult")
+            holder["result"] = candidate
+        except BaseException as exc:  # Adapter failures are data, not interactive prompts.
+            failures["error"] = exc
+
+    worker = threading.Thread(target=invoke, name=f"evidence-adapter-{resolved_run_id}", daemon=True)
+    worker.start()
+    worker.join(timeout=adapter_timeout_seconds)
+    if worker.is_alive():
+        result = AgentResult(status="adapter_timeout", error=f"adapter exceeded {adapter_timeout_seconds:.3f}s")
+        session.stop("adapter timeout")
+        session.seal()
+    elif "error" in failures:
+        exc = failures["error"]
         result = AgentResult(status="adapter_error", error=f"{type(exc).__name__}: {exc}")
         session.stop("adapter error")
+        session.seal()
+    else:
+        result = holder["result"]
+        if len(result.final_response) > family.max_response_chars:
+            result = AgentResult(
+                status="adapter_output_limit",
+                final_response=result.final_response[: family.max_response_chars],
+                metadata=dict(result.metadata),
+                error="final response exceeded output bound and was truncated",
+            )
     if session.status == "active":
         session.stop("adapter returned without stopping")
+    session.seal()
 
     trace = session.to_record()
-    contract = tool_contract(family)
+    annotations = analyze_trace(trace)
     run_record = {
         "run_id": resolved_run_id,
+        "registration_id": registration_id,
         "family_id": family.family_id,
         "variant_id": variant.variant_id,
         "case_sha256": family.canonical_sha256,
         "condition": condition.to_dict(),
+        "task_hash": task_hash,
         "prompt_hash": hashlib.sha256(condition.prompt.encode("utf-8")).hexdigest(),
-        "tool_contract_hash": _hash_json(contract),
+        "tool_contract_hash": contract_hash,
+        "environment_sha256": _hash_json({"case_sha256": family.canonical_sha256, "task_hash": task_hash, "tool_contract_hash": contract_hash}),
         "protocol_version": PROTOCOL_VERSION,
+        "started_at_utc": started_at,
         "runtime_seconds": time.monotonic() - started,
         "execution_status": result.status,
         "verifier_result": {
-            "status": "not_executed",
-            "reason": "protocol-only trial has no materialized workspace",
+            "status": "declarative_only",
+            "reason": "protocol-only trial has no materialized workspace or executable verifier",
             "declaration": dict(variant.verifier),
         },
     }
     artifacts = {
         "run.json": run_record,
         "condition.json": condition.to_dict(),
+        "task.json": task,
         "tool_contract.json": contract,
         "prompt.txt": condition.prompt,
         "event_trace.json": trace,
         "final_response.txt": result.final_response,
         "adapter_result.json": result.to_dict(),
         "verifier_result.json": run_record["verifier_result"],
-        "behavioral_annotations.json": analyze_trace(trace),
+        "behavioral_annotations.json": annotations,
     }
     write_run_artifacts(artifacts_root / "runs" / resolved_run_id, artifacts)
     return run_record | {
         "trace": trace,
         "adapter_result": result.to_dict(),
-        "behavioral_annotations": analyze_trace(trace),
+        "behavioral_annotations": annotations,
     }

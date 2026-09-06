@@ -24,8 +24,11 @@ class UnattendedRunnerTests(unittest.TestCase):
         )
 
         def adapter(task, tools):
+            self.assertEqual(set(task), set(family.initial_context))
+            self.assertFalse(hasattr(tools, "_session"))
             response = tools.request("trace", "metrics-request")
             self.assertTrue(response.accepted)
+            self.assertNotIn("reveals", response.to_dict())
             tools.checkpoint(
                 leading_hypothesis="query propagation",
                 alternative_hypothesis="cache key behavior",
@@ -48,9 +51,11 @@ class UnattendedRunnerTests(unittest.TestCase):
             )
             self.assertEqual(record["run_id"], "proof-run")
             self.assertEqual(record["protocol_version"], "evidence-protocol-v1")
+            self.assertIn("task_hash", record)
             self.assertEqual(record["trace"]["status"], "stopped")
             self.assertEqual(record["behavioral_annotations"]["first_action"], "trace")
             self.assertTrue((root / "runs" / "proof-run" / "immutable.complete").exists())
+            self.assertTrue((root / "runs" / "proof-run" / "task.json").exists())
             with self.assertRaises(ArtifactExistsError):
                 run_unattended_trial(
                     family,

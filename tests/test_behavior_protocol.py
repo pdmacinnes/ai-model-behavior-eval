@@ -44,7 +44,7 @@ class BehaviorProtocolTests(unittest.TestCase):
             session = EvidenceSession(family, variant)
             session.request("trace", "metrics-request")
             session.checkpoint(
-                leading_hypothesis=variant.hidden_cause,
+                leading_hypothesis="query propagation or cache key behavior",
                 alternative_hypothesis="other plausible cause",
                 confidence=0.7,
                 changed_by="trace result",
@@ -53,8 +53,9 @@ class BehaviorProtocolTests(unittest.TestCase):
             session.stop("diagnosis localized")
             observations.append(analyze_trace(session.to_record()))
         comparison = compare_variants(observations[0], observations[1])
-        self.assertTrue(comparison["behavior_changed"])
-        self.assertIn("revealed_factors", comparison["changed_fields"])
+        self.assertFalse(comparison["behavior_changed"])
+        self.assertTrue(comparison["environment_changed"])
+        self.assertIn("revealed_factors", comparison["environment_changed_fields"])
 
     def test_checkpoint_rejects_invalid_confidence(self):
         family = load_case_family(ROOT / "behavior_cases" / "dashboard-filter-refresh" / "family.json")

@@ -8,43 +8,36 @@ from evidence_eval.runner import AgentResult, ModelCondition, run_unattended_tri
 from evidence_eval.schema import load_case_family
 
 
-def trace_first(task, tools):
-    family_id = task["family_id"] if "family_id" in task else ""
-    target_by_family = {
-        "dashboard-filter-refresh": "metrics-request",
-        "session-refresh-role": "role-transition",
-        "pagination-offset": "pagination-request",
-    }
-    target = target_by_family.get(family_id, "")
-    response = tools.request("trace", target)
-    tools.checkpoint(
-        leading_hypothesis="the trace will discriminate between the leading causes",
-        alternative_hypothesis="the initial symptom is insufficient",
-        confidence=0.5 if response.accepted else 0.1,
-        changed_by="initial trace request",
-        next_action="stop",
-    )
-    tools.stop("deterministic proof policy complete")
-    return AgentResult(status="completed", final_response="Trace-first policy completed.")
+def trace_first(target):
+    def policy(task, tools):
+        response = tools.request("trace", target)
+        tools.checkpoint(
+            leading_hypothesis="the trace will discriminate between the leading causes",
+            alternative_hypothesis="the initial symptom is insufficient",
+            confidence=0.5 if response.accepted else 0.1,
+            changed_by="initial trace request",
+            next_action="stop",
+        )
+        tools.stop("deterministic proof policy complete")
+        return AgentResult(status="completed", final_response="Trace-first policy completed.")
+
+    return policy
 
 
-def inspect_first(task, tools):
-    target_by_family = {
-        "dashboard-filter-refresh": "lib/fetchMetrics.ts",
-        "session-refresh-role": "lib/session.ts",
-        "pagination-offset": "app/orders/page.tsx",
-    }
-    target = target_by_family[task["family_id"]]
-    response = tools.request("inspect", target)
-    tools.checkpoint(
-        leading_hypothesis="the inspected implementation boundary is causal",
-        alternative_hypothesis="the symptom originates elsewhere",
-        confidence=0.7 if response.accepted else 0.1,
-        changed_by="initial implementation inspection",
-        next_action="stop",
-    )
-    tools.stop("deterministic proof policy complete")
-    return AgentResult(status="completed", final_response="Inspect-first policy completed.")
+def inspect_first(target):
+    def policy(task, tools):
+        response = tools.request("inspect", target)
+        tools.checkpoint(
+            leading_hypothesis="the inspected implementation boundary is causal",
+            alternative_hypothesis="the symptom originates elsewhere",
+            confidence=0.7 if response.accepted else 0.1,
+            changed_by="initial implementation inspection",
+            next_action="stop",
+        )
+        tools.stop("deterministic proof policy complete")
+        return AgentResult(status="completed", final_response="Inspect-first policy completed.")
+
+    return policy
 
 
 def main() -> int:
@@ -58,10 +51,24 @@ def main() -> int:
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     summaries = []
+    trace_targets = {
+        "dashboard-filter-refresh": "metrics-request",
+        "session-refresh-role": "role-transition",
+        "pagination-offset": "pagination-request",
+    }
+    inspect_targets = {
+        "dashboard-filter-refresh": "lib/fetchMetrics.ts",
+        "session-refresh-role": "lib/session.ts",
+        "pagination-offset": "app/orders/page.tsx",
+    }
     for path in sorted((root / "behavior_cases").glob("*/family.json")):
         family = load_case_family(path)
         for variant in family.variants:
-            for policy_name, policy in (("trace-first", trace_first), ("inspect-first", inspect_first)):
+            policies = (
+                ("trace-first", trace_first(trace_targets[family.family_id])),
+                ("inspect-first", inspect_first(inspect_targets[family.family_id])),
+            )
+            for policy_name, policy in policies:
                 condition = ModelCondition(
                     provider="deterministic",
                     model_id=policy_name,
