@@ -9,7 +9,9 @@ need an external sandbox policy.
 from __future__ import annotations
 
 import json
+import os
 import queue
+import re
 import subprocess
 import threading
 import time
@@ -29,6 +31,7 @@ class SubprocessAdapterConfig:
     timeout_seconds: float = 300.0
     max_message_chars: int = 32_000
     max_pending_messages: int = 128
+    credential_env_names: tuple[str, ...] = ()
 
 
 _WORKER_BEHAVIOR_STATUSES = frozenset({"completed", "refused", "insufficient_evidence", "stopped"})
@@ -46,6 +49,9 @@ class SubprocessWorkspaceAdapter:
             raise ValueError("subprocess adapter message bound must be positive")
         if config.max_pending_messages <= 0:
             raise ValueError("subprocess adapter pending-message bound must be positive")
+        for name in config.credential_env_names:
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+                raise ValueError("credential environment names must be valid environment variable names")
         self.config = config
         self._process_lock = threading.Lock()
         self._active_process: subprocess.Popen[str] | None = None
@@ -68,6 +74,14 @@ class SubprocessWorkspaceAdapter:
             raise BrokenPipeError("subprocess adapter stdin is closed")
         process.stdin.write(self._encode(value))
         process.stdin.flush()
+
+    def _child_environment(self) -> dict[str, str]:
+        environment = _clean_agent_env()
+        environment.pop("PYTHONPATH", None)
+        for name in self.config.credential_env_names:
+            if name in os.environ:
+                environment[name] = os.environ[name]
+        return environment
 
     @staticmethod
     def _terminate_process(process: subprocess.Popen[str]) -> None:
@@ -93,12 +107,10 @@ class SubprocessWorkspaceAdapter:
             self._terminate_process(process)
 
     def run(self, task: dict[str, Any], tools: WorkspaceTools) -> AgentResult:
-        env = _clean_agent_env()
-        env.pop("PYTHONPATH", None)
         try:
             process = subprocess.Popen(
                 list(self.config.command),
-                env=env,
+                env=self._child_environment(),
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,

@@ -397,6 +397,12 @@ def run_workspace_trial(
         contract = workspace_tool_contract(family)
         task: dict[str, Any] = dict(family.initial_context)
         task["tool_contract"] = contract
+        task["model_condition"] = {
+            "provider": condition.provider,
+            "model_id": condition.model_id,
+            "adapter_id": condition.adapter_id,
+            "reasoning_effort": condition.reasoning_effort,
+        }
         task_hash = _hash_json(task)
         contract_hash = _hash_json(contract)
         started_at = time.time()

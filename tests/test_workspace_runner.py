@@ -28,7 +28,18 @@ class WorkspaceRunnerTests(unittest.TestCase):
         seen: dict[str, object] = {}
 
         def adapter(task, tools):
-            self.assertEqual(set(task), set(family.initial_context) | {"tool_contract"})
+            self.assertEqual(set(task), set(family.initial_context) | {"tool_contract", "model_condition"})
+            self.assertEqual(
+                task["model_condition"],
+                {
+                    "provider": "deterministic",
+                    "model_id": "workspace-policy",
+                    "adapter_id": "test-workspace",
+                    "reasoning_effort": None,
+                },
+            )
+            for forbidden in ("workspace", "variant_id", "hidden_cause", "verifier", "calibration"):
+                self.assertNotIn(forbidden, task)
             response = tools.request("inspect", "lib/cache.ts")
             self.assertTrue(response.accepted)
             self.assertIn("unstable_cache", response.content)

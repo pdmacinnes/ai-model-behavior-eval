@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from evidence_eval.runner import AgentResult, ModelCondition
@@ -17,6 +19,53 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class SubprocessAdapterTests(unittest.TestCase):
+    def test_credential_passthrough_is_explicit_and_default_cleaner_still_strips_keys(self):
+        family = load_case_family(ROOT / "behavior_cases" / "dashboard-filter-refresh" / "family.json")
+        condition = ModelCondition(
+            provider="deterministic",
+            model_id="subprocess-env",
+            adapter_id="jsonl-env-worker",
+            prompt=family.initial_context["prompt"],
+        )
+        worker = "import json, os, sys; json.loads(sys.stdin.readline()); print(json.dumps({'type': 'final', 'status': 'completed', 'metadata': {'key_seen': 'OPENAI_API_KEY' in os.environ, 'custom_seen': 'EVIDENCE_EVAL_TEST_KEY' in os.environ}}), flush=True)"
+
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "secret", "EVIDENCE_EVAL_TEST_KEY": "scaffold"}, clear=False):
+            default_adapter = SubprocessWorkspaceAdapter(
+                SubprocessAdapterConfig((sys.executable, "-c", worker), timeout_seconds=5.0)
+            )
+            passthrough_adapter = SubprocessWorkspaceAdapter(
+                SubprocessAdapterConfig(
+                    (sys.executable, "-c", worker),
+                    timeout_seconds=5.0,
+                    credential_env_names=("OPENAI_API_KEY",),
+                )
+            )
+
+            with tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                default_record = run_workspace_trial(
+                    family,
+                    family.variants[0],
+                    condition,
+                    default_adapter,
+                    artifacts_root=root / "default-artifacts",
+                    workspace_parent=root / "default-workspaces",
+                    run_id="default-env-run",
+                )
+                passthrough_record = run_workspace_trial(
+                    family,
+                    family.variants[0],
+                    condition,
+                    passthrough_adapter,
+                    artifacts_root=root / "passthrough-artifacts",
+                    workspace_parent=root / "passthrough-workspaces",
+                    run_id="passthrough-env-run",
+                )
+
+        self.assertFalse(default_record["adapter_result"]["metadata"]["key_seen"])
+        self.assertTrue(default_record["adapter_result"]["metadata"]["custom_seen"])
+        self.assertTrue(passthrough_record["adapter_result"]["metadata"]["key_seen"])
+
     def test_worker_uses_jsonl_tools_without_receiving_workspace_path(self):
         family = load_case_family(ROOT / "behavior_cases" / "dashboard-filter-refresh" / "family.json")
         condition = ModelCondition(

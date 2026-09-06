@@ -18,6 +18,16 @@ from .pilot import (
 from .runner import AgentResult, EvidenceTools, ModelCondition, run_unattended_trial, tool_contract
 from .schema import CaseFamily, CaseVariant, ToolObservation, load_case_family
 from .subprocess_adapter import SubprocessAdapterConfig, SubprocessWorkspaceAdapter
+from .provider_worker import (
+    OpenAICompatibleTransport,
+    ProviderReply,
+    ProviderToolCall,
+    ProviderTransportError,
+    ScriptedMockTransport,
+    build_openai_compatible_request,
+    parse_openai_compatible_response,
+    run_provider_worker,
+)
 from .workspace import MaterializedWorkspace, WorkspaceMaterializationError, materialize_variant
 from .workspace_grader import (
     WorkspaceVerifierResult,
@@ -54,6 +64,14 @@ __all__ = [
     "validate_case_family",
     "SubprocessAdapterConfig",
     "SubprocessWorkspaceAdapter",
+    "OpenAICompatibleTransport",
+    "ProviderReply",
+    "ProviderToolCall",
+    "ProviderTransportError",
+    "ScriptedMockTransport",
+    "build_openai_compatible_request",
+    "parse_openai_compatible_response",
+    "run_provider_worker",
     "MaterializedWorkspace",
     "WorkspaceMaterializationError",
     "materialize_variant",
