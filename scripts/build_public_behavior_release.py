@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from evidence_eval.public import sanitize_public_artifact, sanitize_public_case_family
+from evidence_eval.public import PUBLIC_EXCLUDED_ARTIFACTS, sanitize_public_artifact, sanitize_public_case_family
 
 
 def _read_json(path: Path) -> Any:
@@ -37,6 +37,8 @@ def build(cases_root: Path, output_root: Path, artifacts_root: Path | None = Non
             batch_count += 1
         for run_dir in sorted(path for path in artifacts_root.glob("runs/*") if path.is_dir()):
             for source in sorted(run_dir.glob("*.json")):
+                if source.name in PUBLIC_EXCLUDED_ARTIFACTS:
+                    continue
                 sanitized = sanitize_public_artifact(source.name, _read_json(source))
                 destination = output_root / "runs" / run_dir.name / source.name
                 destination.parent.mkdir(parents=True, exist_ok=True)
@@ -45,10 +47,11 @@ def build(cases_root: Path, output_root: Path, artifacts_root: Path | None = Non
 
     manifest = {
         "schema": "evidence-bounded-debugging-public-release-v1",
-        "sanitizer_version": "1",
+        "sanitizer_version": "2",
         "case_count": case_count,
         "run_count": run_count,
         "batch_count": batch_count,
+        "excluded_artifacts": list(PUBLIC_EXCLUDED_ARTIFACTS),
         "answer_key_fields_removed": ["hidden_cause", "verifier", "calibration", "reveals", "revealed_factors"],
     }
     output_root.mkdir(parents=True, exist_ok=True)

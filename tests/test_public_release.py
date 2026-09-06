@@ -45,12 +45,20 @@ class PublicReleaseTests(unittest.TestCase):
                 json.dumps({"revealed_factors": ["secret"], "first_action": "trace"}),
                 encoding="utf-8",
             )
+            (artifacts / "adapter_result.json").write_text(
+                json.dumps({"status": "completed", "final_response": "provider output with sk-test-secret"}),
+                encoding="utf-8",
+            )
+            (artifacts / "final_response.txt").write_text("provider output with sk-test-secret", encoding="utf-8")
 
             output = root / "public"
             manifest = builder.build(ROOT / "behavior_cases", output, root / "artifacts")
 
             self.assertEqual(manifest["run_count"], 1)
             self.assertEqual(manifest["batch_count"], 1)
+            self.assertIn("adapter_result.json", manifest["excluded_artifacts"])
+            self.assertFalse((output / "runs" / "run-1" / "adapter_result.json").exists())
+            self.assertFalse((output / "runs" / "run-1" / "final_response.txt").exists())
             self.assertTrue((output / "batches" / "batch-1" / "manifest.json").exists())
             public_annotations = json.loads((output / "runs" / "run-1" / "behavioral_annotations.json").read_text(encoding="utf-8"))
             self.assertNotIn("revealed_factors", public_annotations)

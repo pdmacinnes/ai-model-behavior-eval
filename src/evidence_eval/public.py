@@ -1,7 +1,53 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import re
 from typing import Any
+
+
+PUBLIC_EXCLUDED_ARTIFACTS = ("adapter_result.json", "final_response.txt")
+_PUBLIC_BATCH_FORBIDDEN_KEYS = frozenset(
+    {
+        "adapter_result",
+        "api_key",
+        "authorization",
+        "case_root",
+        "calibration",
+        "command",
+        "cwd",
+        "environment",
+        "hidden_cause",
+        "password",
+        "revealed_factors",
+        "reveals",
+        "secret",
+        "token",
+        "variant_id",
+        "verifier",
+        "workspace_path",
+    }
+)
+_PUBLIC_PATH_PATTERN = re.compile(r"(?:[A-Za-z]:\\|/(?:Users|home|workspace)/)")
+
+
+def validate_public_batch_manifest(value: Any) -> None:
+    """Reject batch manifests that contain internal fields or local paths."""
+    if not isinstance(value, dict):
+        raise ValueError("public batch manifest must be an object")
+
+    def walk(item: Any, path: str) -> None:
+        if isinstance(item, dict):
+            for key, child in item.items():
+                if key in _PUBLIC_BATCH_FORBIDDEN_KEYS:
+                    raise ValueError(f"public batch manifest contains forbidden field: {path}.{key}")
+                walk(child, f"{path}.{key}")
+        elif isinstance(item, list):
+            for index, child in enumerate(item):
+                walk(child, f"{path}[{index}]")
+        elif isinstance(item, str) and _PUBLIC_PATH_PATTERN.search(item):
+            raise ValueError(f"public batch manifest contains a local path: {path}")
+
+    walk(value, "$")
 
 
 def sanitize_public_trace(record: dict[str, Any]) -> dict[str, Any]:
@@ -48,6 +94,11 @@ def sanitize_public_case_family(raw: dict[str, Any]) -> dict[str, Any]:
 
 
 def sanitize_public_artifact(name: str, value: Any) -> Any:
+    if name in PUBLIC_EXCLUDED_ARTIFACTS:
+        raise ValueError(f"raw adapter artifact is not publishable: {name}")
+    if name == "manifest.json":
+        validate_public_batch_manifest(value)
+        return deepcopy(value)
     if name in {"run.json", "verifier_result.json"} and isinstance(value, dict):
         return sanitize_public_run(value)
     if name in {"event_trace.json", "behavioral_annotations.json"} and isinstance(value, dict):

@@ -2,7 +2,13 @@ from __future__ import annotations
 
 import unittest
 
-from evidence_eval.public import sanitize_public_artifact, sanitize_public_case_family, sanitize_public_run, sanitize_public_trace
+from evidence_eval.public import (
+    sanitize_public_artifact,
+    sanitize_public_case_family,
+    sanitize_public_run,
+    sanitize_public_trace,
+    validate_public_batch_manifest,
+)
 
 
 class PublicSanitizerTests(unittest.TestCase):
@@ -20,6 +26,14 @@ class PublicSanitizerTests(unittest.TestCase):
         sanitized = sanitize_public_artifact("behavioral_annotations.json", annotations)
         self.assertNotIn("revealed_factors", sanitized)
         self.assertEqual(sanitized["first_action"], "trace")
+
+    def test_raw_adapter_artifacts_are_not_publishable(self):
+        with self.assertRaisesRegex(ValueError, "not publishable"):
+            sanitize_public_artifact("adapter_result.json", {"final_response": "provider output"})
+
+    def test_batch_manifest_gate_rejects_internal_fields(self):
+        with self.assertRaisesRegex(ValueError, "forbidden field"):
+            validate_public_batch_manifest({"schema": "evidence-bounded-debugging-batch-v1", "command": ["worker"]})
 
     def test_run_sanitizer_removes_verifier_declaration(self):
         run = {

@@ -87,7 +87,7 @@ The runner may include counts and verifier outcomes as supporting fields, but it
 - If a run or batch identifier already exists, the runner refuses to overwrite it.
 - If the worker command references a missing executable or exits before its final message, the run is recorded as infrastructure-censored and the batch proceeds.
 - If a registration contains a `cwd`, workspace path, case-root override, unknown field, or `network_required=true`, validation fails before any worker invocation.
-- If a provider worker writes credentials, workspace paths, or hidden case data into its final response or metadata, publication is blocked for the affected artifact. Version one does not claim to scrub arbitrary free text; the sanitizer must not be described as a secret-removal system.
+- Raw adapter results and final response files are excluded from the public release in version one. If a provider worker writes credentials, workspace paths, or hidden case data into structured publishable artifacts such as the batch manifest, publication is blocked. Version one does not claim to scrub arbitrary free text; the sanitizer must not be described as a secret-removal system.
 - If a provider requires network access, that requirement must be declared in the condition and handled by the future provider sandbox policy. The batch runner itself must not silently broaden filesystem or network access.
 
 ## Acceptance Criteria
@@ -106,6 +106,7 @@ The runner may include counts and verifier outcomes as supporting fields, but it
 - [ ] Tests cover registration validation, stable identifiers, no-overwrite behavior, continuation after failure, and manifest aggregation.
 - [ ] The smoke batch produces artifacts accepted by the existing public release sanitizer.
 - [ ] The publishable batch manifest contains provenance only and excludes commands, environment values, credentials, workspace paths, and hidden case annotations.
-- [ ] Publication blocks artifacts containing known credential/path/answer-key leaks; version one makes no unsupported claim that arbitrary free text is scrubbed.
+- [ ] Raw adapter results and final response files are excluded from public release; structured batch manifests are rejected when they contain known credential/path/answer-key fields.
+- [ ] Version one makes no unsupported claim that arbitrary free text is scrubbed.
 - [ ] The implementation does not add a composite score, leaderboard, or model-ranking field.
 - [ ] The implementation is complete only after the full test suite and deterministic smoke batch pass.
