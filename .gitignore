@@ -1,5 +1,7 @@
 # Raw and local research artifacts
 results/
+registrations/*.json
+!registrations/v1-sanitized.json
 registrations/v1.json
 artifacts/raw/
 artifacts/*.log
