@@ -42,6 +42,9 @@ class ModelMatrixTests(unittest.TestCase):
         )
         self.assertEqual([item.provider for item in matrix.pending_conditions], ["meta"])
         self.assertEqual(matrix.providers, ("alibaba", "anthropic", "deepseek", "google", "moonshot", "openai", "xai"))
+        google = matrix.conditions_for_provider("google")
+        self.assertEqual(len(google), 1)
+        self.assertEqual(google[0].transport, "google-gemini")
 
     def test_catalog_rejects_unknown_fields_and_placeholders(self):
         with tempfile.TemporaryDirectory() as directory:

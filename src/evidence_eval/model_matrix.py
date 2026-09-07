@@ -12,7 +12,7 @@ from typing import Any
 
 MODEL_MATRIX_SCHEMA = "evidence-bounded-debugging-model-matrix-v1"
 APPROVED_ADAPTER_ID = "jsonl-provider-worker"
-APPROVED_TRANSPORTS = frozenset({"openai-compatible", "openai-responses"})
+APPROVED_TRANSPORTS = frozenset({"openai-compatible", "openai-responses", "google-gemini"})
 SMOKE_FAMILY_IDS = ("dashboard-filter-refresh",)
 FULL_FAMILY_IDS = ("dashboard-filter-refresh", "pagination-offset", "session-refresh-role")
 SMOKE_REPETITIONS = 1

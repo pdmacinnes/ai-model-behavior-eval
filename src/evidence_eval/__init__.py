@@ -41,12 +41,15 @@ from .runner import AgentResult, EvidenceTools, ModelCondition, run_unattended_t
 from .schema import CaseFamily, CaseVariant, ToolObservation, load_case_family
 from .subprocess_adapter import SubprocessAdapterConfig, SubprocessWorkspaceAdapter
 from .provider_worker import (
+    GoogleGeminiTransport,
     OpenAICompatibleTransport,
     ProviderReply,
     ProviderToolCall,
     ProviderTransportError,
     ScriptedMockTransport,
+    build_google_gemini_request,
     build_openai_compatible_request,
+    parse_google_gemini_response,
     parse_openai_compatible_response,
     run_provider_worker,
 )
@@ -102,12 +105,15 @@ __all__ = [
     "SubprocessAdapterConfig",
     "SubprocessWorkspaceAdapter",
     "OpenAICompatibleTransport",
+    "GoogleGeminiTransport",
     "ProviderReply",
     "ProviderToolCall",
     "ProviderTransportError",
     "ScriptedMockTransport",
     "build_openai_compatible_request",
+    "build_google_gemini_request",
     "parse_openai_compatible_response",
+    "parse_google_gemini_response",
     "run_provider_worker",
     "MaterializedWorkspace",
     "WorkspaceMaterializationError",

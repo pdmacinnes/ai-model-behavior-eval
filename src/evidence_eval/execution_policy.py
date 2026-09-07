@@ -13,7 +13,7 @@ if TYPE_CHECKING:
 
 
 APPROVED_PROVIDER_ADAPTER_ID = "jsonl-provider-worker"
-APPROVED_PROVIDER_TRANSPORTS = frozenset({"openai-compatible", "openai-responses"})
+APPROVED_PROVIDER_TRANSPORTS = frozenset({"openai-compatible", "openai-responses", "google-gemini"})
 NETWORK_AUTHORIZATION_ENV = "EVIDENCE_EVAL_NETWORK_AUTHORIZED"
 PROVIDER_CREDENTIAL_ENV = "EVIDENCE_EVAL_PROVIDER_API_KEY"
 PROVIDER_BASE_URL_ENV = "EVIDENCE_EVAL_PROVIDER_BASE_URL"
@@ -70,10 +70,10 @@ def validate_execution_authorization(
         if (
             len(condition.command) >= 4
             and condition.command[2] == "--transport"
-            and condition.command[3] == "openai-responses"
+            and condition.command[3] in {"openai-responses", "google-gemini"}
             and not condition.network_required
         ):
-            raise ExecutionPolicyError("openai-responses transport requires network_required: true")
+            raise ExecutionPolicyError("selected native provider transport requires network_required: true")
     network_conditions = tuple(condition for condition in registration.conditions if condition.network_required)
     if network_conditions and not allow_network:
         raise ExecutionPolicyError("network-required registration needs the explicit --allow-network batch flag")

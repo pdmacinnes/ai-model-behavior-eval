@@ -47,7 +47,7 @@
       "condition_id": "google-gemini-3-8-flash",
       "provider": "google",
       "model_id": "gemini-3.8-flash",
-      "transport": "openai-compatible",
+      "transport": "google-gemini",
       "reasoning_effort": null
     },
     {

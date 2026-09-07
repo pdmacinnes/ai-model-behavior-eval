@@ -31,7 +31,7 @@
 ## Acceptance Criteria
 
 - [ ] Worker CLI parses and applies all three configurable conversation bounds.
-- [ ] OpenAI-compatible and Responses transports enforce the configured conversation bounds.
+- [ ] OpenAI-compatible, Responses, and native Gemini transports enforce the configured conversation bounds.
 - [ ] Trusted execution policy accepts only the approved positive numeric bound flags.
 - [ ] Matrix registrations include the reviewed 24-round, 48-message, and 192,000-character limits.
 - [ ] Matrix generation supports a new safe batch label for reruns.

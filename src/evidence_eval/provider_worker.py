@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from typing import Any, Protocol, TextIO
@@ -28,6 +30,13 @@ DEFAULT_MAX_CONVERSATION_CHARS = 128_000
 DEFAULT_MAX_TOOL_DEFINITION_BYTES = 32_000
 DEFAULT_MAX_RESPONSE_BYTES = 128_000
 DEFAULT_MAX_RESPONSE_TEXT_CHARS = 32_000
+_GEMINI_MODEL_SEGMENT = re.compile(r"[^/\?#\s]+\Z")
+_GEMINI_REASONING_LEVELS = {
+    "minimal": "minimal",
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+}
 
 
 class ProviderWorkerError(RuntimeError):
@@ -410,6 +419,162 @@ def parse_openai_compatible_response(value: Any, *, max_text_chars: int = 32_000
     return ProviderReply(text=content, tool_calls=tuple(tool_calls))
 
 
+def _gemini_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    declarations: list[dict[str, Any]] = []
+    for raw_tool in tools:
+        if not isinstance(raw_tool, dict):
+            raise ProviderWorkerError("Gemini tool must be an object")
+        function = raw_tool.get("function")
+        if not isinstance(function, dict):
+            raise ProviderWorkerError("Gemini tool is missing a function")
+        name = _require_string(function.get("name"), "Gemini tool name")
+        if name not in SUPPORTED_TOOL_METHODS:
+            raise ProviderWorkerError("Gemini tool is unsupported")
+        description = function.get("description", "")
+        if not isinstance(description, str):
+            raise ProviderWorkerError("Gemini tool description must be text")
+        parameters = function.get("parameters")
+        if not isinstance(parameters, dict):
+            raise ProviderWorkerError("Gemini tool parameters must be an object")
+        declarations.append(
+            {
+                "name": name,
+                "description": description,
+                "parameters": json.loads(json.dumps(parameters, ensure_ascii=False)),
+            }
+        )
+    if not declarations:
+        raise ProviderWorkerError("Gemini tools must contain at least one function declaration")
+    return [{"functionDeclarations": declarations}]
+
+
+def _validate_gemini_bounds(
+    contents: list[dict[str, Any]],
+    tools: list[dict[str, Any]],
+    *,
+    max_request_bytes: int,
+    max_conversation_messages: int,
+    max_conversation_chars: int,
+    max_tool_definition_bytes: int,
+) -> list[dict[str, Any]]:
+    bounds = (
+        max_request_bytes,
+        max_conversation_messages,
+        max_conversation_chars,
+        max_tool_definition_bytes,
+    )
+    if any(value <= 0 for value in bounds):
+        raise ValueError("provider request bounds must be positive")
+    if not isinstance(contents, list) or not contents or not all(isinstance(item, dict) for item in contents):
+        raise ProviderWorkerError("Gemini contents must be a non-empty list of objects")
+    if len(contents) > max_conversation_messages:
+        raise ProviderWorkerError("provider conversation exceeded the message bound")
+    serialized_contents = json.dumps(contents, ensure_ascii=False, separators=(",", ":"))
+    if len(serialized_contents) > max_conversation_chars:
+        raise ProviderWorkerError("provider conversation exceeded the character bound")
+    gemini_tools = _gemini_tools(tools)
+    serialized_tools = json.dumps(gemini_tools, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    if len(serialized_tools) > max_tool_definition_bytes:
+        raise ProviderWorkerError("provider tool definitions exceeded the byte bound")
+    return gemini_tools
+
+
+def build_google_gemini_request(
+    contents: list[dict[str, Any]],
+    tools: list[dict[str, Any]],
+    *,
+    model_id: str,
+    reasoning_effort: str | None,
+    max_request_bytes: int = DEFAULT_MAX_REQUEST_BYTES,
+    max_conversation_messages: int = DEFAULT_MAX_CONVERSATION_MESSAGES,
+    max_conversation_chars: int = DEFAULT_MAX_CONVERSATION_CHARS,
+    max_tool_definition_bytes: int = DEFAULT_MAX_TOOL_DEFINITION_BYTES,
+) -> dict[str, Any]:
+    model = _require_string(model_id, "model_id")
+    if not _GEMINI_MODEL_SEGMENT.fullmatch(model):
+        raise ProviderWorkerError("Gemini model_id must be one URL path segment")
+    gemini_tools = _validate_gemini_bounds(
+        contents,
+        tools,
+        max_request_bytes=max_request_bytes,
+        max_conversation_messages=max_conversation_messages,
+        max_conversation_chars=max_conversation_chars,
+        max_tool_definition_bytes=max_tool_definition_bytes,
+    )
+    request: dict[str, Any] = {
+        "contents": json.loads(json.dumps(contents, ensure_ascii=False)),
+        "tools": gemini_tools,
+    }
+    if reasoning_effort is not None:
+        effort = _require_string(reasoning_effort, "reasoning_effort")
+        thinking_level = _GEMINI_REASONING_LEVELS.get(effort)
+        if thinking_level is None:
+            raise ProviderWorkerError("Gemini reasoning_effort is unsupported")
+        request["generationConfig"] = {"thinkingConfig": {"thinkingLevel": thinking_level}}
+    if len(json.dumps(request, ensure_ascii=False, separators=(",", ":")).encode("utf-8")) > max_request_bytes:
+        raise ProviderWorkerError("provider request exceeded the byte bound")
+    return request
+
+
+def _parse_google_gemini_response_content(
+    value: Any,
+    *,
+    max_text_chars: int,
+) -> tuple[ProviderReply, dict[str, Any]]:
+    if not isinstance(value, dict):
+        raise ProviderTransportError("Gemini response must be an object")
+    candidates = value.get("candidates")
+    if not isinstance(candidates, list) or len(candidates) != 1 or not isinstance(candidates[0], dict):
+        raise ProviderTransportError("Gemini response must contain exactly one candidate")
+    native_content = candidates[0].get("content")
+    if not isinstance(native_content, dict):
+        raise ProviderTransportError("Gemini response candidate is missing content")
+    parts = native_content.get("parts")
+    if not isinstance(parts, list) or not parts:
+        raise ProviderTransportError("Gemini response content is missing parts")
+
+    text_parts: list[str] = []
+    tool_calls: list[ProviderToolCall] = []
+    for part in parts:
+        if not isinstance(part, dict):
+            raise ProviderTransportError("Gemini response part must be an object")
+        if "text" in part:
+            text = part["text"]
+            if not isinstance(text, str):
+                raise ProviderTransportError("Gemini response text must be text")
+            if not part.get("thought"):
+                text_parts.append(text)
+        if "functionCall" not in part:
+            continue
+        if len(tool_calls) >= 1:
+            raise ProviderTransportError("Gemini response must contain at most one function call")
+        function_call = part["functionCall"]
+        if not isinstance(function_call, dict):
+            raise ProviderTransportError("Gemini function call must be an object")
+        call_id = _require_string(function_call.get("id"), "Gemini function call id")
+        name = _require_string(function_call.get("name"), "Gemini function name")
+        if name not in SUPPORTED_TOOL_METHODS:
+            raise ProviderTransportError("Gemini returned an unsupported tool")
+        arguments = function_call.get("args")
+        if not isinstance(arguments, dict):
+            raise ProviderTransportError("Gemini function arguments must be an object")
+        if not isinstance(part.get("thoughtSignature"), str) or not part["thoughtSignature"]:
+            raise ProviderTransportError("Gemini function call is missing thoughtSignature")
+        tool_calls.append(ProviderToolCall(call_id, name, json.loads(json.dumps(arguments, ensure_ascii=False))))
+
+    text = "".join(text_parts)
+    if len(text) > max_text_chars:
+        raise ProviderTransportError("Gemini response text exceeded the bound")
+    return ProviderReply(text=text, tool_calls=tuple(tool_calls)), json.loads(
+        json.dumps(native_content, ensure_ascii=False)
+    )
+
+
+def parse_google_gemini_response(value: Any, *, max_text_chars: int = DEFAULT_MAX_RESPONSE_TEXT_CHARS) -> ProviderReply:
+    reply, _ = _parse_google_gemini_response_content(value, max_text_chars=max_text_chars)
+    return reply
+
+
 class OpenAICompatibleTransport:
     def __init__(
         self,
@@ -546,6 +711,178 @@ class OpenAIResponsesTransport(OpenAICompatibleTransport):
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise ProviderTransportError("provider response was not valid JSON") from exc
         return parse_openai_responses_response(parsed, max_text_chars=self.max_text_chars)
+
+
+class GoogleGeminiTransport:
+    """Native Gemini transport with provider-owned continuation history."""
+
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        api_key: str,
+        timeout_seconds: float = 30.0,
+        max_response_bytes: int = DEFAULT_MAX_RESPONSE_BYTES,
+        max_text_chars: int = DEFAULT_MAX_RESPONSE_TEXT_CHARS,
+        max_request_bytes: int = DEFAULT_MAX_REQUEST_BYTES,
+        max_conversation_messages: int = DEFAULT_MAX_CONVERSATION_MESSAGES,
+        max_conversation_chars: int = DEFAULT_MAX_CONVERSATION_CHARS,
+        max_tool_definition_bytes: int = DEFAULT_MAX_TOOL_DEFINITION_BYTES,
+        allow_network: bool = False,
+    ) -> None:
+        if "\n" in base_url or "\r" in base_url:
+            raise ValueError("provider base URL must be a single-line value")
+        if any(
+            value <= 0
+            for value in (
+                timeout_seconds,
+                max_response_bytes,
+                max_text_chars,
+                max_request_bytes,
+                max_conversation_messages,
+                max_conversation_chars,
+                max_tool_definition_bytes,
+            )
+        ):
+            raise ValueError("provider transport bounds must be positive")
+        self.base_url = base_url.rstrip("/")
+        self.api_key = api_key
+        self.timeout_seconds = timeout_seconds
+        self.max_response_bytes = max_response_bytes
+        self.max_text_chars = max_text_chars
+        self.max_request_bytes = max_request_bytes
+        self.max_conversation_messages = max_conversation_messages
+        self.max_conversation_chars = max_conversation_chars
+        self.max_tool_definition_bytes = max_tool_definition_bytes
+        self.allow_network = allow_network
+        self._native_contents: list[dict[str, Any]] | None = None
+        self._pending_call: tuple[str, str] | None = None
+
+    def _seed_history(self, messages: list[dict[str, Any]]) -> None:
+        if not isinstance(messages, list) or len(messages) != 1 or not isinstance(messages[0], dict):
+            raise ProviderWorkerError("Gemini initial conversation must contain one user message")
+        if messages[0].get("role") != "user":
+            raise ProviderWorkerError("Gemini initial conversation must start with a user message")
+        prompt = messages[0].get("content")
+        if not isinstance(prompt, str):
+            raise ProviderWorkerError("Gemini user message content must be text")
+        self._native_contents = [{"role": "user", "parts": [{"text": prompt}]}]
+
+    def _append_function_result(self, messages: list[dict[str, Any]]) -> None:
+        if self._native_contents is None or self._pending_call is None:
+            raise ProviderWorkerError("Gemini conversation has no pending function call")
+        if not messages or not isinstance(messages[-1], dict) or messages[-1].get("role") != "tool":
+            raise ProviderWorkerError("Gemini conversation is missing the latest function result")
+        result_message = messages[-1]
+        call_id, name = self._pending_call
+        if result_message.get("tool_call_id") != call_id:
+            raise ProviderWorkerError("Gemini function result call id did not match the pending function call")
+        result_text = result_message.get("content")
+        if not isinstance(result_text, str):
+            raise ProviderWorkerError("Gemini function result must be text")
+        try:
+            result_value = json.loads(result_text)
+        except json.JSONDecodeError as exc:
+            raise ProviderWorkerError("Gemini function result was not valid JSON") from exc
+        if not isinstance(result_value, dict):
+            raise ProviderWorkerError("Gemini function result must be an object")
+
+        matching_assistant = None
+        for message in reversed(messages[:-1]):
+            if message.get("role") != "assistant":
+                continue
+            raw_calls = message.get("tool_calls", [])
+            if not isinstance(raw_calls, list) or len(raw_calls) > 1:
+                raise ProviderWorkerError("Gemini conversation must contain at most one function call per round")
+            if raw_calls:
+                matching_assistant = raw_calls[0]
+                break
+        if not isinstance(matching_assistant, dict) or matching_assistant.get("id") != call_id:
+            raise ProviderWorkerError("Gemini function result did not match the pending function call")
+        function = matching_assistant.get("function")
+        if not isinstance(function, dict) or function.get("name") != name:
+            raise ProviderWorkerError("Gemini function result name did not match the pending function call")
+
+        self._native_contents.append(
+            {
+                "role": "user",
+                "parts": [
+                    {
+                        "functionResponse": {
+                            "name": name,
+                            "response": {"result": result_value},
+                            "id": call_id,
+                        }
+                    }
+                ],
+            }
+        )
+
+    def request(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        *,
+        model_id: str,
+        reasoning_effort: str | None,
+    ) -> ProviderReply:
+        if not self.allow_network:
+            raise ProviderTransportError("real provider network execution is disabled")
+        if not self.base_url:
+            raise ProviderTransportError("provider base URL is missing")
+        if not self.api_key:
+            raise ProviderTransportError("provider credential is missing")
+        if self._native_contents is None:
+            self._seed_history(messages)
+        elif self._pending_call is not None:
+            self._append_function_result(messages)
+        else:
+            raise ProviderWorkerError("Gemini conversation received a request after final completion")
+
+        assert self._native_contents is not None
+        payload = build_google_gemini_request(
+            self._native_contents,
+            tools,
+            model_id=model_id,
+            reasoning_effort=reasoning_effort,
+            max_request_bytes=self.max_request_bytes,
+            max_conversation_messages=self.max_conversation_messages,
+            max_conversation_chars=self.max_conversation_chars,
+            max_tool_definition_bytes=self.max_tool_definition_bytes,
+        )
+        model = _require_string(model_id, "model_id")
+        if not _GEMINI_MODEL_SEGMENT.fullmatch(model):
+            raise ProviderWorkerError("Gemini model_id must be one URL path segment")
+        endpoint = f"{self.base_url}/models/{urllib.parse.quote(model, safe='')}:generateContent"
+        request = urllib.request.Request(
+            endpoint,
+            data=json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "x-goog-api-key": self.api_key,
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
+                body = response.read(self.max_response_bytes + 1)
+        except urllib.error.HTTPError as exc:
+            raise ProviderTransportError(f"provider HTTP error {exc.code}") from None
+        except (urllib.error.URLError, TimeoutError, OSError):
+            raise ProviderTransportError("provider request failed") from None
+        if len(body) > self.max_response_bytes:
+            raise ProviderTransportError("provider response exceeded the byte bound")
+        try:
+            parsed = json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ProviderTransportError("provider response was not valid JSON") from exc
+        reply, native_content = _parse_google_gemini_response_content(parsed, max_text_chars=self.max_text_chars)
+        self._native_contents.append(native_content)
+        self._pending_call = None
+        if reply.tool_calls:
+            call = reply.tool_calls[0]
+            self._pending_call = (call.call_id, call.name)
+        return reply
 
 
 class ScriptedMockTransport:
@@ -811,7 +1148,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run a bounded JSONL provider worker.")
     parser.add_argument(
         "--transport",
-        choices=("mock", "openai-compatible", "openai-responses"),
+        choices=("mock", "openai-compatible", "openai-responses", "google-gemini"),
         default="openai-compatible",
     )
     parser.add_argument("--base-url", default=os.environ.get(PROVIDER_BASE_URL_ENV, ""))
@@ -825,6 +1162,14 @@ def main(argv: list[str] | None = None) -> int:
             transport: ProviderTransport = ScriptedMockTransport()
         elif args.transport == "openai-responses":
             transport = OpenAIResponsesTransport(
+                base_url=args.base_url,
+                api_key=os.environ.get(PROVIDER_CREDENTIAL_ENV, ""),
+                max_conversation_messages=args.max_conversation_messages,
+                max_conversation_chars=args.max_conversation_chars,
+                allow_network=os.environ.get(NETWORK_AUTHORIZATION_ENV) == "1",
+            )
+        elif args.transport == "google-gemini":
+            transport = GoogleGeminiTransport(
                 base_url=args.base_url,
                 api_key=os.environ.get(PROVIDER_CREDENTIAL_ENV, ""),
                 max_conversation_messages=args.max_conversation_messages,

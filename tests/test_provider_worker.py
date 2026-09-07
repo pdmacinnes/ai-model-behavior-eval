@@ -14,6 +14,7 @@ from pathlib import Path
 
 from evidence_eval.execution_policy import NETWORK_AUTHORIZATION_ENV, PROVIDER_BASE_URL_ENV, PROVIDER_CREDENTIAL_ENV
 from evidence_eval.provider_worker import (
+    GoogleGeminiTransport,
     OpenAICompatibleTransport,
     OpenAIResponsesTransport,
     ProviderReply,
@@ -21,9 +22,11 @@ from evidence_eval.provider_worker import (
     ProviderWorkerError,
     ProviderTransportError,
     ScriptedMockTransport,
+    build_google_gemini_request,
     build_openai_compatible_request,
     build_openai_responses_request,
     main,
+    parse_google_gemini_response,
     parse_openai_compatible_response,
     parse_openai_responses_response,
     run_provider_worker,
@@ -248,6 +251,268 @@ class ProviderWorkerTests(unittest.TestCase):
     def test_responses_parser_rejects_incomplete_response(self):
         with self.assertRaisesRegex(ProviderTransportError, "not completed"):
             parse_openai_responses_response({"status": "in_progress", "output": []})
+
+    def test_gemini_request_shape_uses_native_contents_and_function_declarations(self):
+        request = build_google_gemini_request(
+            [{"role": "user", "parts": [{"text": "investigate"}]}],
+            [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "request_evidence",
+                        "description": "Inspect evidence",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                }
+            ],
+            model_id="gemini-3.8-flash",
+            reasoning_effort=None,
+        )
+        self.assertEqual(request["contents"][0]["parts"][0]["text"], "investigate")
+        self.assertEqual(request["tools"][0]["functionDeclarations"][0]["name"], "request_evidence")
+        self.assertNotIn("generationConfig", request)
+        self.assertNotIn("api_key", json.dumps(request))
+
+    def test_gemini_reasoning_effort_is_explicitly_mapped(self):
+        request = build_google_gemini_request(
+            [{"role": "user", "parts": [{"text": "investigate"}]}],
+            [{"type": "function", "function": {"name": "stop_investigation", "parameters": {}}}],
+            model_id="gemini-3.8-flash",
+            reasoning_effort="low",
+        )
+        self.assertEqual(
+            request["generationConfig"],
+            {"thinkingConfig": {"thinkingLevel": "low"}},
+        )
+        with self.assertRaisesRegex(ProviderWorkerError, "unsupported"):
+            build_google_gemini_request(
+                [{"role": "user", "parts": [{"text": "investigate"}]}],
+                [{"type": "function", "function": {"name": "stop_investigation", "parameters": {}}}],
+                model_id="gemini-3.8-flash",
+                reasoning_effort="xhigh",
+            )
+
+    def test_gemini_parser_hides_thought_text_and_signature(self):
+        response = {
+            "candidates": [
+                {
+                    "content": {
+                        "role": "model",
+                        "parts": [
+                            {"thought": True, "text": "private thought"},
+                            {
+                                "functionCall": {
+                                    "id": "gemini-call-1",
+                                    "name": "request_evidence",
+                                    "args": {"action": "inspect", "target": "lib/cache.ts"},
+                                },
+                                "thoughtSignature": "opaque-signature",
+                            },
+                        ],
+                    }
+                }
+            ]
+        }
+        reply = parse_google_gemini_response(response)
+        self.assertEqual(reply.text, "")
+        self.assertEqual(reply.tool_calls[0].call_id, "gemini-call-1")
+        self.assertNotIn("private thought", repr(reply))
+        self.assertNotIn("opaque-signature", repr(reply))
+
+    def test_gemini_parser_rejects_missing_signature_and_multiple_candidates(self):
+        missing_signature = {
+            "candidates": [
+                {
+                    "content": {
+                        "parts": [
+                            {
+                                "functionCall": {
+                                    "id": "call-1",
+                                    "name": "request_evidence",
+                                    "args": {},
+                                }
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
+        with self.assertRaisesRegex(ProviderTransportError, "thoughtSignature"):
+            parse_google_gemini_response(missing_signature)
+        with self.assertRaisesRegex(ProviderTransportError, "exactly one candidate"):
+            parse_google_gemini_response({"candidates": [{}, {}]})
+
+    def test_gemini_model_id_and_base_url_fail_closed(self):
+        tools = [{"type": "function", "function": {"name": "stop_investigation", "parameters": {}}}]
+        contents = [{"role": "user", "parts": [{"text": "investigate"}]}]
+        with self.assertRaisesRegex(ProviderWorkerError, "URL path segment"):
+            build_google_gemini_request(
+                contents,
+                tools,
+                model_id="gemini/model",
+                reasoning_effort=None,
+            )
+        transport = GoogleGeminiTransport(base_url="", api_key="secret", allow_network=True)
+        with patch("evidence_eval.provider_worker.urllib.request.urlopen") as urlopen:
+            with self.assertRaisesRegex(ProviderTransportError, "base URL is missing"):
+                transport.request(contents, tools, model_id="gemini-3.8-flash", reasoning_effort=None)
+        urlopen.assert_not_called()
+
+    def test_fake_gemini_transport_preserves_signature_and_bridges_function_result(self):
+        class FakeResponse:
+            def __init__(self, body):
+                self.body = body
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc_value, traceback):
+                return False
+
+            def read(self, limit):
+                self.limit = limit
+                return self.body
+
+        responses = [
+            json.dumps(
+                {
+                    "candidates": [
+                        {
+                            "content": {
+                                "role": "model",
+                                "parts": [
+                                    {
+                                        "functionCall": {
+                                            "id": "gemini-inspect",
+                                            "name": "request_evidence",
+                                            "args": {"action": "inspect", "target": "app/dashboard/page.tsx"},
+                                        },
+                                        "thoughtSignature": "opaque-signature",
+                                    }
+                                ],
+                            }
+                        }
+                    ]
+                }
+            ).encode("utf-8"),
+            json.dumps(
+                {
+                    "candidates": [
+                        {
+                            "content": {
+                                "role": "model",
+                                "parts": [
+                                    {
+                                        "functionCall": {
+                                            "id": "gemini-stop",
+                                            "name": "stop_investigation",
+                                            "args": {"reason": "done"},
+                                        },
+                                        "thoughtSignature": "opaque-stop-signature",
+                                    }
+                                ],
+                            }
+                        }
+                    ]
+                }
+            ).encode("utf-8"),
+        ]
+        transport = GoogleGeminiTransport(
+            base_url="http://fake.local/v1beta",
+            api_key="secret",
+            allow_network=True,
+        )
+        initial = [{"role": "user", "content": "investigate"}]
+        tools = [{"type": "function", "function": {"name": "request_evidence", "parameters": {}}}]
+        with patch(
+            "evidence_eval.provider_worker.urllib.request.urlopen",
+            side_effect=lambda request, timeout: FakeResponse(responses.pop(0)),
+        ) as urlopen:
+            first = transport.request(initial, tools, model_id="gemini-3.8-flash", reasoning_effort=None)
+            second_messages = [
+                *initial,
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "gemini-inspect",
+                            "type": "function",
+                            "function": {"name": "request_evidence", "arguments": "{}"},
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "gemini-inspect",
+                    "content": '{"content":"visible evidence"}',
+                },
+            ]
+            second = transport.request(second_messages, tools, model_id="gemini-3.8-flash", reasoning_effort=None)
+        self.assertEqual(first.tool_calls[0].call_id, "gemini-inspect")
+        self.assertEqual(second.tool_calls[0].name, "stop_investigation")
+        self.assertEqual(len(urlopen.call_args_list), 2)
+        first_request = urlopen.call_args_list[0].args[0]
+        second_request = urlopen.call_args_list[1].args[0]
+        self.assertEqual(first_request.full_url, "http://fake.local/v1beta/models/gemini-3.8-flash:generateContent")
+        self.assertEqual(first_request.get_header("X-goog-api-key"), "secret")
+        second_payload = json.loads(second_request.data.decode("utf-8"))
+        self.assertEqual(
+            second_payload["contents"][1]["parts"][0]["thoughtSignature"],
+            "opaque-signature",
+        )
+        function_response = second_payload["contents"][-1]["parts"][0]["functionResponse"]
+        self.assertEqual(function_response["id"], "gemini-inspect")
+        self.assertEqual(function_response["name"], "request_evidence")
+        self.assertEqual(function_response["response"], {"result": {"content": "visible evidence"}})
+
+    def test_gemini_mismatched_result_does_not_make_second_request(self):
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc_value, traceback):
+                return False
+
+            def read(self, limit):
+                del limit
+                return json.dumps(
+                    {
+                        "candidates": [
+                            {
+                                "content": {
+                                    "parts": [
+                                        {
+                                            "functionCall": {
+                                                "id": "expected",
+                                                "name": "request_evidence",
+                                                "args": {},
+                                            },
+                                            "thoughtSignature": "opaque",
+                                        }
+                                    ]
+                                }
+                            }
+                        ]
+                    }
+                ).encode("utf-8")
+
+        transport = GoogleGeminiTransport(base_url="http://fake.local/v1beta", api_key="secret", allow_network=True)
+        tools = [{"type": "function", "function": {"name": "request_evidence", "parameters": {}}}]
+        with patch("evidence_eval.provider_worker.urllib.request.urlopen", return_value=FakeResponse()) as urlopen:
+            transport.request([{"role": "user", "content": "investigate"}], tools, model_id="gemini-3.8-flash", reasoning_effort=None)
+            with self.assertRaisesRegex(ProviderWorkerError, "call id"):
+                transport.request(
+                    [
+                        {"role": "user", "content": "investigate"},
+                        {"role": "assistant", "tool_calls": [{"id": "expected", "function": {"name": "request_evidence"}}]},
+                        {"role": "tool", "tool_call_id": "wrong", "content": "{}"},
+                    ],
+                    tools,
+                    model_id="gemini-3.8-flash",
+                    reasoning_effort=None,
+                )
+        self.assertEqual(urlopen.call_count, 1)
 
     def test_network_transport_is_disabled_before_request(self):
         transport = OpenAICompatibleTransport(base_url="https://example.invalid/v1", api_key="secret")
@@ -517,6 +782,20 @@ class ProviderWorkerTests(unittest.TestCase):
         self.assertIsInstance(run_worker.call_args.args[2], OpenAIResponsesTransport)
         self.assertTrue(run_worker.call_args.args[2].allow_network)
 
+        with patch.dict(
+            os.environ,
+            {
+                PROVIDER_BASE_URL_ENV: "https://example.invalid/v1beta",
+                PROVIDER_CREDENTIAL_ENV: "secret",
+                NETWORK_AUTHORIZATION_ENV: "1",
+            },
+            clear=True,
+        ):
+            with patch("evidence_eval.provider_worker.run_provider_worker") as run_worker:
+                self.assertEqual(main(["--transport", "google-gemini"]), 0)
+        self.assertIsInstance(run_worker.call_args.args[2], GoogleGeminiTransport)
+        self.assertTrue(run_worker.call_args.args[2].allow_network)
+
     def test_worker_cli_propagates_explicit_conversation_bounds(self):
         with patch.dict(
             os.environ,
@@ -699,6 +978,100 @@ class ProviderWorkerTests(unittest.TestCase):
             self.assertNotIn("reasoning", server.payloads[0])
             self.assertEqual(server.payloads[1]["input"][-1]["type"], "function_call_output")
             self.assertEqual(server.payloads[1]["input"][-1]["call_id"], "fake-inspect")
+        finally:
+            server.shutdown()
+            thread.join(timeout=5)
+            server.server_close()
+
+    def test_gemini_worker_runs_through_subprocess_and_parent_tools(self):
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                length = int(self.headers["Content-Length"])
+                payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                self.server.payloads.append(payload)
+                if self.server.round == 0:
+                    parts = [
+                        {
+                            "functionCall": {
+                                "id": "gemini-inspect",
+                                "name": "request_evidence",
+                                "args": {"action": "inspect", "target": "app/dashboard/page.tsx"},
+                            },
+                            "thoughtSignature": "opaque-signature",
+                        }
+                    ]
+                else:
+                    parts = [
+                        {
+                            "functionCall": {
+                                "id": "gemini-stop",
+                                "name": "stop_investigation",
+                                "args": {"reason": "fake Gemini transport completed"},
+                            },
+                            "thoughtSignature": "opaque-stop-signature",
+                        }
+                    ]
+                self.server.round += 1
+                body = json.dumps({"candidates": [{"content": {"role": "model", "parts": parts}}]}).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, format, *args):
+                del format, args
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        server.round = 0
+        server.payloads = []
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            family = load_case_family(ROOT / "behavior_cases" / "dashboard-filter-refresh" / "family.json")
+            condition = ModelCondition(
+                provider="google",
+                model_id="gemini-3.8-flash",
+                adapter_id="jsonl-provider-worker",
+                prompt=family.initial_context["prompt"],
+            )
+            command = (
+                sys.executable,
+                str(ROOT / "scripts" / "openai_compatible_workspace_worker.py"),
+                "--transport",
+                "google-gemini",
+                "--base-url",
+                f"http://127.0.0.1:{server.server_port}/v1beta",
+            )
+            adapter = SubprocessWorkspaceAdapter(
+                SubprocessAdapterConfig(
+                    command,
+                    timeout_seconds=5.0,
+                    credential_env_names=(PROVIDER_CREDENTIAL_ENV,),
+                    network_authorized=True,
+                )
+            )
+            with patch.dict(os.environ, {PROVIDER_CREDENTIAL_ENV: "secret"}, clear=False):
+                with tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    record = run_workspace_trial(
+                        family,
+                        family.variants[0],
+                        condition,
+                        adapter,
+                        artifacts_root=root / "artifacts",
+                        workspace_parent=root / "workspaces",
+                        run_id="gemini-fake-subprocess",
+                        adapter_timeout_seconds=10.0,
+                    )
+            self.assertEqual(record["execution_status"], "stopped")
+            self.assertFalse(record["infrastructure_censored"])
+            self.assertEqual(len(server.payloads), 2)
+            self.assertEqual(server.payloads[0]["contents"][0]["role"], "user")
+            self.assertEqual(server.payloads[1]["contents"][1]["parts"][0]["thoughtSignature"], "opaque-signature")
+            function_response = server.payloads[1]["contents"][-1]["parts"][0]["functionResponse"]
+            self.assertEqual(function_response["id"], "gemini-inspect")
+            self.assertEqual(function_response["name"], "request_evidence")
         finally:
             server.shutdown()
             thread.join(timeout=5)

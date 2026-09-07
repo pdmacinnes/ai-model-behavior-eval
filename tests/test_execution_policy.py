@@ -88,6 +88,16 @@ class ExecutionPolicyTests(unittest.TestCase):
             environment={PROVIDER_CREDENTIAL_ENV: "secret"},
         )
 
+    def test_gemini_transport_is_allowlisted_for_live_batches(self):
+        condition = _live_condition(
+            command=(sys.executable, str(APPROVED_WORKER), "--transport", "google-gemini"),
+        )
+        validate_execution_authorization(
+            _registration(condition),
+            allow_network=True,
+            environment={PROVIDER_CREDENTIAL_ENV: "secret"},
+        )
+
     def test_conversation_bound_arguments_are_allowlisted(self):
         condition = _live_condition(
             command=(
@@ -112,6 +122,18 @@ class ExecutionPolicyTests(unittest.TestCase):
     def test_responses_transport_requires_network_declaration(self):
         condition = _live_condition(
             command=(sys.executable, str(APPROVED_WORKER), "--transport", "openai-responses"),
+            network_required=False,
+        )
+        with self.assertRaisesRegex(ExecutionPolicyError, "network_required"):
+            validate_execution_authorization(
+                _registration(condition),
+                allow_network=False,
+                environment={},
+            )
+
+    def test_gemini_transport_requires_network_declaration(self):
+        condition = _live_condition(
+            command=(sys.executable, str(APPROVED_WORKER), "--transport", "google-gemini"),
             network_required=False,
         )
         with self.assertRaisesRegex(ExecutionPolicyError, "network_required"):
