@@ -22,6 +22,7 @@ from .execution_policy import (
 SUPPORTED_TOOL_METHODS = frozenset(
     {"request_evidence", "edit_file", "record_checkpoint", "stop_investigation"}
 )
+MAX_PROVIDER_TOOL_CALLS_PER_RESPONSE = 4
 BEHAVIOR_STATUSES = frozenset({"completed", "refused", "insufficient_evidence", "stopped"})
 PROVIDER_WORKER_VERSION = "evidence-jsonl-provider-worker-v1"
 DEFAULT_MAX_REQUEST_BYTES = 256_000
@@ -70,6 +71,33 @@ class ProviderTransport(Protocol):
         model_id: str,
         reasoning_effort: str | None,
     ) -> ProviderReply: ...
+
+
+def _validate_tool_call_batch(
+    tool_calls: list[ProviderToolCall] | tuple[ProviderToolCall, ...],
+    *,
+    error_type: type[ProviderWorkerError],
+) -> tuple[ProviderToolCall, ...]:
+    if not isinstance(tool_calls, (list, tuple)):
+        raise error_type("provider tool calls must be a list")
+    if len(tool_calls) > MAX_PROVIDER_TOOL_CALLS_PER_RESPONSE:
+        raise error_type("provider response contained too many tool calls")
+    seen_ids: set[str] = set()
+    for call in tool_calls:
+        if not isinstance(call, ProviderToolCall):
+            raise error_type("provider tool call must be an object")
+        if not isinstance(call.call_id, str) or not call.call_id:
+            raise error_type("provider tool call id must be a non-empty string")
+        if not isinstance(call.name, str) or not call.name:
+            raise error_type("provider tool name must be a non-empty string")
+        if call.name not in SUPPORTED_TOOL_METHODS:
+            raise error_type("provider returned an unsupported tool")
+        if not isinstance(call.arguments, dict):
+            raise error_type("provider tool arguments must be an object")
+        if call.call_id in seen_ids:
+            raise error_type("provider response contained duplicate tool call id")
+        seen_ids.add(call.call_id)
+    return tuple(tool_calls)
 
 
 def _require_string(value: Any, label: str) -> str:
@@ -175,16 +203,24 @@ def _responses_input_items(messages: list[dict[str, Any]]) -> list[dict[str, Any
             raw_calls = message.get("tool_calls", [])
             if raw_calls is None:
                 raw_calls = []
-            if not isinstance(raw_calls, list) or len(raw_calls) > 1:
-                raise ProviderWorkerError("Responses conversation must contain at most one function call per round")
+            if not isinstance(raw_calls, list):
+                raise ProviderWorkerError("Responses conversation tool calls must be a list")
+            if len(raw_calls) > MAX_PROVIDER_TOOL_CALLS_PER_RESPONSE:
+                raise ProviderWorkerError("Responses conversation contained too many function calls")
+            seen_call_ids: set[str] = set()
             for raw_call in raw_calls:
                 if not isinstance(raw_call, dict):
                     raise ProviderWorkerError("Responses function call must be an object")
                 call_id = _require_string(raw_call.get("id"), "Responses function call id")
+                if call_id in seen_call_ids:
+                    raise ProviderWorkerError("Responses conversation contained duplicate function call id")
+                seen_call_ids.add(call_id)
                 function = raw_call.get("function")
                 if not isinstance(function, dict):
                     raise ProviderWorkerError("Responses function call is missing a function")
                 name = _require_string(function.get("name"), "Responses function name")
+                if name not in SUPPORTED_TOOL_METHODS:
+                    raise ProviderWorkerError("Responses conversation contained an unsupported tool")
                 arguments_text = _require_string(function.get("arguments"), "Responses function arguments")
                 try:
                     arguments = json.loads(arguments_text)
@@ -329,8 +365,8 @@ def parse_openai_responses_response(value: Any, *, max_text_chars: int = DEFAULT
                         raise ProviderTransportError("provider response output text must be text")
                     text_parts.append(text)
         elif item_type == "function_call":
-            if len(tool_calls) >= 1:
-                raise ProviderTransportError("provider response must contain at most one function call")
+            if len(tool_calls) >= MAX_PROVIDER_TOOL_CALLS_PER_RESPONSE:
+                raise ProviderTransportError("provider response contained too many tool calls")
             call_id = _require_string(item.get("call_id"), "provider function call id")
             name = _require_string(item.get("name"), "provider function name")
             arguments_text = _require_string(item.get("arguments"), "provider function arguments")
@@ -346,7 +382,10 @@ def parse_openai_responses_response(value: Any, *, max_text_chars: int = DEFAULT
     text = "".join(text_parts)
     if len(text) > max_text_chars:
         raise ProviderTransportError("provider response text exceeded the bound")
-    return ProviderReply(text=text, tool_calls=tuple(tool_calls))
+    return ProviderReply(
+        text=text,
+        tool_calls=_validate_tool_call_batch(tool_calls, error_type=ProviderTransportError),
+    )
 
 
 def _validate_provider_bounds(
@@ -393,8 +432,10 @@ def parse_openai_compatible_response(value: Any, *, max_text_chars: int = 32_000
     raw_tool_calls = message.get("tool_calls", [])
     if raw_tool_calls is None:
         raw_tool_calls = []
-    if not isinstance(raw_tool_calls, list) or len(raw_tool_calls) > 1:
-        raise ProviderTransportError("provider response must contain at most one tool call")
+    if not isinstance(raw_tool_calls, list):
+        raise ProviderTransportError("provider tool calls must be a list")
+    if len(raw_tool_calls) > MAX_PROVIDER_TOOL_CALLS_PER_RESPONSE:
+        raise ProviderTransportError("provider response contained too many tool calls")
     tool_calls: list[ProviderToolCall] = []
     for raw_call in raw_tool_calls:
         if not isinstance(raw_call, dict):
@@ -416,7 +457,10 @@ def parse_openai_compatible_response(value: Any, *, max_text_chars: int = 32_000
         if not isinstance(parsed_arguments, dict):
             raise ProviderTransportError("provider tool arguments must decode to an object")
         tool_calls.append(ProviderToolCall(call_id, name, parsed_arguments))
-    return ProviderReply(text=content, tool_calls=tuple(tool_calls))
+    return ProviderReply(
+        text=content,
+        tool_calls=_validate_tool_call_batch(tool_calls, error_type=ProviderTransportError),
+    )
 
 
 def _gemini_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1057,9 +1101,8 @@ def run_provider_worker(
             model_id=condition["model_id"],
             reasoning_effort=condition["reasoning_effort"],
         )
-        if len(reply.tool_calls) > 1:
-            raise ProviderWorkerError("provider returned multiple tool calls")
-        if not reply.tool_calls:
+        tool_calls = _validate_tool_call_batch(reply.tool_calls, error_type=ProviderWorkerError)
+        if not tool_calls:
             status = reply.behavioral_status or "completed"
             if status not in BEHAVIOR_STATUSES:
                 raise ProviderWorkerError("provider returned an unsupported behavioral status")
@@ -1080,19 +1123,25 @@ def run_provider_worker(
             )
             return
 
-        call = reply.tool_calls[0]
-        if call.name not in SUPPORTED_TOOL_METHODS:
-            raise ProviderWorkerError("provider returned an unsupported tool")
-        _write_json_line(
-            output_stream,
-            {"type": "call", "id": call.call_id, "method": call.name, "arguments": call.arguments},
-            max_message_chars,
-        )
-        result_message = _read_json_line(input_stream, max_message_chars)
-        if result_message.get("type") != "result" or result_message.get("id") != call.call_id:
-            raise ProviderWorkerError("worker received an unexpected tool result")
-        result_ok = result_message.get("ok") is True
-        result_value = result_message.get("result") if result_ok else {"error": result_message.get("error", "tool call failed")}
+        if len(tool_calls) > 1 and any(call.name == "stop_investigation" for call in tool_calls):
+            raise ProviderWorkerError("a multi-call provider response cannot contain stop_investigation")
+        results: list[tuple[ProviderToolCall, bool, Any]] = []
+        for call in tool_calls:
+            _write_json_line(
+                output_stream,
+                {"type": "call", "id": call.call_id, "method": call.name, "arguments": call.arguments},
+                max_message_chars,
+            )
+            result_message = _read_json_line(input_stream, max_message_chars)
+            if result_message.get("type") != "result" or result_message.get("id") != call.call_id:
+                raise ProviderWorkerError("worker received an unexpected tool result")
+            result_ok = result_message.get("ok") is True
+            result_value = (
+                result_message.get("result")
+                if result_ok
+                else {"error": result_message.get("error", "tool call failed")}
+            )
+            results.append((call, result_ok, result_value))
         messages.append(
             {
                 "role": "assistant",
@@ -1106,15 +1155,17 @@ def run_provider_worker(
                             "arguments": json.dumps(call.arguments, ensure_ascii=False, separators=(",", ":")),
                         },
                     }
+                    for call in tool_calls
                 ],
             }
         )
-        messages.append(
+        messages.extend(
             {
                 "role": "tool",
                 "tool_call_id": call.call_id,
                 "content": json.dumps(result_value, ensure_ascii=False, separators=(",", ":")),
             }
+            for call, _result_ok, result_value in results
         )
         _validate_provider_bounds(
             messages,
@@ -1124,7 +1175,7 @@ def run_provider_worker(
             max_conversation_chars=max_conversation_chars,
             max_tool_definition_bytes=max_tool_definition_bytes,
         )
-        if call.name == "stop_investigation" and result_ok:
+        if len(tool_calls) == 1 and tool_calls[0].name == "stop_investigation" and results[0][1]:
             _write_json_line(
                 output_stream,
                 {

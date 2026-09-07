@@ -47,15 +47,15 @@ The initial implementation includes:
 
 The HTTP transport must use a bounded request timeout, bounded response size, explicit model selection, and structured parsing. It must reject malformed responses, missing choices, unsupported tool-call shapes, and provider responses that exceed configured limits.
 
-A provider round that returns more than one tool call, or a tool call whose name is not one of the four supported workspace methods, is fail-closed as an adapter error. Parallel tool execution is out of scope; the worker emits at most one JSONL `call` per provider round.
+OpenAI-compatible and OpenAI Responses provider rounds may return up to `MAX_PROVIDER_TOOL_CALLS_PER_RESPONSE` supported tool calls, with the provider's order preserved. The worker emits the existing JSONL `call` messages sequentially and never executes them concurrently. A response that exceeds the bound, contains duplicate call ids within that response, or contains an unsupported method is fail-closed as an adapter error. Native Gemini remains single-call because its signature-bearing continuation history is transport-owned.
 
 ### Normal worker flow
 
 1. Read and validate exactly one task message from stdin.
 2. Build the provider request from the prompt and the visible tool contract.
 3. Ask the model for its next message through the configured transport.
-4. If the model emits exactly one supported tool call, emit one JSONL `call` message to the parent and wait for the matching `result` message.
-5. Append the tool result to the provider conversation without exposing any parent-only object or hidden case data.
+4. If the model emits supported tool calls, validate the complete response before emitting any parent call, then emit the existing JSONL `call` messages in provider order and wait for each matching `result` message.
+5. Append one assistant message containing the complete ordered call list, followed by the ordered tool results, to the provider conversation without exposing any parent-only object or hidden case data.
 6. Continue until the model returns final text with no tool calls, calls `stop_investigation`, reaches the configured round bound, or a bounded provider/transport error occurs.
 7. Emit exactly one final JSONL message using one of the existing behavioral statuses: `completed`, `refused`, `insufficient_evidence`, or `stopped`.
 8. Record only non-secret, bounded metadata such as provider label, request count, and worker protocol version.
@@ -88,7 +88,7 @@ Tool calls must preserve the existing method names and argument schemas: `reques
 ## Edge Cases & Error Handling
 
 - Missing or malformed initial task input produces a bounded adapter error and no provider request.
-- A provider response with multiple choices, multiple tool calls in one message, unsupported tool calls, invalid JSON arguments, or missing required fields is fail-closed as an adapter error.
+- A provider response with multiple choices, more than the bounded number of tool calls, duplicate call ids within one response, unsupported tool calls, invalid JSON arguments, or missing required fields is fail-closed as an adapter error.
 - A tool result with an error is returned to the model as data; the worker must not retry the tool automatically or bypass the parent.
 - The worker stops after a configured maximum number of provider rounds and reports a bounded adapter error rather than looping indefinitely.
 - Provider request, response, and metadata sizes are bounded independently of the parent JSONL message limit.
@@ -107,7 +107,7 @@ Tool calls must preserve the existing method names and argument schemas: `reques
 - [ ] The worker never receives a workspace path, verifier object, hidden cause, case variant identifier, or answer-key annotation.
 - [ ] The parent injects only allowlisted non-secret condition fields (`provider`, `model_id`, `adapter_id`, `reasoning_effort`) into the task payload.
 - [ ] The worker emits only the existing supported JSONL message types and tool method names.
-- [ ] Multiple tool calls in one provider message fail closed.
+- [ ] OpenAI-compatible and Responses responses accept bounded ordered multi-call batches, while native Gemini remains single-call.
 - [ ] OpenAI-compatible request construction and response parsing are covered by tests without making network calls.
 - [ ] Malformed, oversized, unsupported, timed-out, and credential-missing provider cases fail closed with bounded diagnostics.
 - [ ] Provider credentials can be passed only through an explicit environment allowlist that either survives `_clean_agent_env` or is explicitly passed through by the subprocess adapter; credential values are absent from artifacts and retained diagnostics.

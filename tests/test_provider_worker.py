@@ -15,6 +15,7 @@ from pathlib import Path
 from evidence_eval.execution_policy import NETWORK_AUTHORIZATION_ENV, PROVIDER_BASE_URL_ENV, PROVIDER_CREDENTIAL_ENV
 from evidence_eval.provider_worker import (
     GoogleGeminiTransport,
+    MAX_PROVIDER_TOOL_CALLS_PER_RESPONSE,
     OpenAICompatibleTransport,
     OpenAIResponsesTransport,
     ProviderReply,
@@ -94,22 +95,60 @@ class ProviderWorkerTests(unittest.TestCase):
         self.assertEqual(reply.tool_calls[0].name, "request_evidence")
         self.assertEqual(reply.tool_calls[0].arguments["target"], "lib/cache.ts")
 
-    def test_openai_response_parser_rejects_multiple_tool_calls(self):
+    def test_openai_response_parser_accepts_ordered_multiple_tool_calls_with_text(self):
         response = {
             "choices": [
                 {
                     "message": {
-                        "content": "",
+                        "content": "I will inspect both likely boundaries.",
                         "tool_calls": [
-                            {"id": "one", "function": {"name": "stop_investigation", "arguments": "{}"}},
-                            {"id": "two", "function": {"name": "stop_investigation", "arguments": "{}"}},
+                            {
+                                "id": "one",
+                                "function": {
+                                    "name": "request_evidence",
+                                    "arguments": '{"action":"inspect","target":"app/dashboard/page.tsx"}',
+                                },
+                            },
+                            {
+                                "id": "two",
+                                "function": {
+                                    "name": "request_evidence",
+                                    "arguments": '{"action":"inspect","target":"lib/cache.ts"}',
+                                },
+                            },
                         ],
                     }
                 }
             ]
         }
-        with self.assertRaises(ProviderTransportError):
-            parse_openai_compatible_response(response)
+        reply = parse_openai_compatible_response(response)
+        self.assertEqual(reply.text, "I will inspect both likely boundaries.")
+        self.assertEqual([call.call_id for call in reply.tool_calls], ["one", "two"])
+        self.assertEqual([call.arguments["target"] for call in reply.tool_calls], ["app/dashboard/page.tsx", "lib/cache.ts"])
+
+    def test_openai_response_parser_rejects_duplicate_or_oversized_tool_calls(self):
+        duplicate = {
+            "choices": [
+                {
+                    "message": {
+                        "content": "",
+                        "tool_calls": [
+                            {"id": "same", "function": {"name": "request_evidence", "arguments": "{}"}},
+                            {"id": "same", "function": {"name": "request_evidence", "arguments": "{}"}},
+                        ],
+                    }
+                }
+            ]
+        }
+        with self.assertRaisesRegex(ProviderTransportError, "duplicate"):
+            parse_openai_compatible_response(duplicate)
+        oversized_calls = [
+            {"id": f"call-{index}", "function": {"name": "request_evidence", "arguments": "{}"}}
+            for index in range(MAX_PROVIDER_TOOL_CALLS_PER_RESPONSE + 1)
+        ]
+        oversized = {"choices": [{"message": {"content": "", "tool_calls": oversized_calls}}]}
+        with self.assertRaisesRegex(ProviderTransportError, "too many"):
+            parse_openai_compatible_response(oversized)
 
     def test_openai_response_parser_rejects_oversized_text_and_bad_arguments(self):
         oversized = {"choices": [{"message": {"content": "too long", "tool_calls": []}}]}
@@ -184,6 +223,43 @@ class ProviderWorkerTests(unittest.TestCase):
         self.assertNotIn("Authorization", json.dumps(request))
         self.assertNotIn("api_key", json.dumps(request))
 
+    def test_responses_request_shape_preserves_multiple_call_and_result_order(self):
+        messages = [
+            {"role": "user", "content": "investigate"},
+            {
+                "role": "assistant",
+                "content": "I will inspect both paths.",
+                "tool_calls": [
+                    {
+                        "id": "call-1",
+                        "type": "function",
+                        "function": {"name": "request_evidence", "arguments": '{"target":"app/dashboard/page.tsx"}'},
+                    },
+                    {
+                        "id": "call-2",
+                        "type": "function",
+                        "function": {"name": "request_evidence", "arguments": '{"target":"lib/cache.ts"}'},
+                    },
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call-1", "content": '{"content":"page"}'},
+            {"role": "tool", "tool_call_id": "call-2", "content": '{"content":"cache"}'},
+        ]
+        request = build_openai_responses_request(
+            messages,
+            [{"type": "function", "function": {"name": "request_evidence", "parameters": {}}}],
+            model_id="model-a",
+            reasoning_effort=None,
+        )
+        self.assertEqual(
+            [item.get("type", item.get("role")) for item in request["input"]],
+            ["user", "message", "function_call", "function_call", "function_call_output", "function_call_output"],
+        )
+        self.assertEqual(
+            [item.get("call_id") for item in request["input"] if item.get("type") in {"function_call", "function_call_output"}],
+            ["call-1", "call-2", "call-1", "call-2"],
+        )
+
     def test_responses_request_omits_null_reasoning(self):
         request = build_openai_responses_request(
             [{"role": "user", "content": "investigate"}],
@@ -217,7 +293,7 @@ class ProviderWorkerTests(unittest.TestCase):
                 reasoning_effort=None,
             )
 
-    def test_responses_parser_accepts_text_and_one_function_call(self):
+    def test_responses_parser_accepts_text_and_ordered_multiple_function_calls(self):
         reply = parse_openai_responses_response(
             {
                 "status": "completed",
@@ -230,23 +306,43 @@ class ProviderWorkerTests(unittest.TestCase):
                         "name": "request_evidence",
                         "arguments": '{"action":"inspect","target":"lib/cache.ts"}',
                     },
+                    {
+                        "type": "function_call",
+                        "call_id": "call-2",
+                        "name": "request_evidence",
+                        "arguments": '{"action":"inspect","target":"app/dashboard/page.tsx"}',
+                    },
                 ],
             }
         )
         self.assertEqual(reply.text, "I found the relevant evidence.")
-        self.assertEqual(reply.tool_calls[0].call_id, "call-1")
-        self.assertEqual(reply.tool_calls[0].arguments["action"], "inspect")
+        self.assertEqual([call.call_id for call in reply.tool_calls], ["call-1", "call-2"])
+        self.assertEqual([call.arguments["action"] for call in reply.tool_calls], ["inspect", "inspect"])
 
-    def test_responses_parser_rejects_multiple_function_calls(self):
+    def test_responses_parser_rejects_duplicate_or_oversized_function_calls(self):
         response = {
             "status": "completed",
             "output": [
-                {"type": "function_call", "call_id": "one", "name": "stop_investigation", "arguments": "{}"},
-                {"type": "function_call", "call_id": "two", "name": "stop_investigation", "arguments": "{}"},
+                {"type": "function_call", "call_id": "same", "name": "request_evidence", "arguments": "{}"},
+                {"type": "function_call", "call_id": "same", "name": "request_evidence", "arguments": "{}"},
             ],
         }
-        with self.assertRaises(ProviderTransportError):
+        with self.assertRaisesRegex(ProviderTransportError, "duplicate"):
             parse_openai_responses_response(response)
+        oversized = {
+            "status": "completed",
+            "output": [
+                {
+                    "type": "function_call",
+                    "call_id": f"call-{index}",
+                    "name": "request_evidence",
+                    "arguments": "{}",
+                }
+                for index in range(MAX_PROVIDER_TOOL_CALLS_PER_RESPONSE + 1)
+            ],
+        }
+        with self.assertRaisesRegex(ProviderTransportError, "too many"):
+            parse_openai_responses_response(oversized)
 
     def test_responses_parser_rejects_incomplete_response(self):
         with self.assertRaisesRegex(ProviderTransportError, "not completed"):
@@ -605,6 +701,36 @@ class ProviderWorkerTests(unittest.TestCase):
             run_provider_worker(input_stream, io.StringIO(), transport, max_conversation_chars=500)
         self.assertEqual(transport.calls, 1)
 
+    def test_multi_call_conversation_bound_fails_before_next_request(self):
+        class TwoCallTransport:
+            calls = 0
+
+            def request(self, messages, tools, *, model_id, reasoning_effort):
+                del messages, tools, model_id, reasoning_effort
+                self.calls += 1
+                return ProviderReply(
+                    tool_calls=(
+                        ProviderToolCall("call-1", "request_evidence", {"action": "inspect", "target": "app/dashboard/page.tsx"}),
+                        ProviderToolCall("call-2", "request_evidence", {"action": "inspect", "target": "lib/cache.ts"}),
+                    )
+                )
+
+        task = self._task()
+        input_stream = io.StringIO(
+            "\n".join(
+                [
+                    json.dumps(task),
+                    json.dumps({"type": "result", "id": "call-1", "ok": True, "result": {"content": "x" * 300}}),
+                    json.dumps({"type": "result", "id": "call-2", "ok": True, "result": {"content": "y" * 300}}),
+                ]
+            )
+            + "\n"
+        )
+        transport = TwoCallTransport()
+        with self.assertRaisesRegex(ProviderWorkerError, "conversation exceeded"):
+            run_provider_worker(input_stream, io.StringIO(), transport, max_conversation_chars=500)
+        self.assertEqual(transport.calls, 1)
+
     def test_http_timeout_is_sanitized(self):
         transport = OpenAICompatibleTransport(
             base_url="https://example.invalid/v1",
@@ -883,6 +1009,83 @@ class ProviderWorkerTests(unittest.TestCase):
         self.assertEqual(messages[2]["method"], "edit_file")
         self.assertEqual(messages[3]["method"], "stop_investigation")
 
+    def test_worker_dispatches_multi_call_response_in_order_and_appends_complete_round(self):
+        class MultiCallTransport:
+            def __init__(self):
+                self.requests = []
+
+            def request(self, messages, tools, *, model_id, reasoning_effort):
+                del tools, model_id, reasoning_effort
+                self.requests.append(json.loads(json.dumps(messages)))
+                if len(self.requests) == 1:
+                    return ProviderReply(
+                        text="I will inspect both likely boundaries.",
+                        tool_calls=(
+                            ProviderToolCall("call-1", "request_evidence", {"action": "inspect", "target": "app/dashboard/page.tsx"}),
+                            ProviderToolCall("call-2", "request_evidence", {"action": "inspect", "target": "lib/cache.ts"}),
+                        ),
+                    )
+                return ProviderReply(
+                    tool_calls=(ProviderToolCall("call-stop", "stop_investigation", {"reason": "done"}),),
+                )
+
+        task = self._task()
+        input_stream = io.StringIO(
+            "\n".join(
+                [
+                    json.dumps(task),
+                    json.dumps({"type": "result", "id": "call-1", "ok": True, "result": {"content": "page"}}),
+                    json.dumps({"type": "result", "id": "call-2", "ok": False, "error": "evidence budget"}),
+                    json.dumps({"type": "result", "id": "call-stop", "ok": True, "result": {"accepted": True}}),
+                ]
+            )
+            + "\n"
+        )
+        output_stream = io.StringIO()
+        transport = MultiCallTransport()
+        run_provider_worker(input_stream, output_stream, transport)
+        messages = [json.loads(line) for line in output_stream.getvalue().splitlines()]
+        self.assertEqual([message["type"] for message in messages], ["call", "call", "call", "final"])
+        self.assertEqual([message["id"] for message in messages[:3]], ["call-1", "call-2", "call-stop"])
+        self.assertEqual(messages[-1]["status"], "stopped")
+        continuation = transport.requests[1]
+        self.assertEqual(len(continuation[1]["tool_calls"]), 2)
+        self.assertEqual([call["id"] for call in continuation[1]["tool_calls"]], ["call-1", "call-2"])
+        self.assertEqual([message["tool_call_id"] for message in continuation[2:4]], ["call-1", "call-2"])
+        self.assertEqual(json.loads(continuation[3]["content"]), {"error": "evidence budget"})
+
+    def test_worker_validates_complete_multi_call_batch_before_dispatch(self):
+        class InvalidBatchTransport:
+            def request(self, messages, tools, *, model_id, reasoning_effort):
+                del messages, tools, model_id, reasoning_effort
+                return ProviderReply(
+                    tool_calls=(
+                        ProviderToolCall("same", "request_evidence", {}),
+                        ProviderToolCall("same", "request_evidence", {}),
+                    )
+                )
+
+        output_stream = io.StringIO()
+        with self.assertRaisesRegex(ProviderWorkerError, "duplicate"):
+            run_provider_worker(io.StringIO(json.dumps(self._task()) + "\n"), output_stream, InvalidBatchTransport())
+        self.assertEqual(output_stream.getvalue(), "")
+
+    def test_worker_rejects_multi_call_stop_before_dispatch(self):
+        class MixedStopTransport:
+            def request(self, messages, tools, *, model_id, reasoning_effort):
+                del messages, tools, model_id, reasoning_effort
+                return ProviderReply(
+                    tool_calls=(
+                        ProviderToolCall("call-1", "request_evidence", {}),
+                        ProviderToolCall("call-stop", "stop_investigation", {}),
+                    )
+                )
+
+        output_stream = io.StringIO()
+        with self.assertRaisesRegex(ProviderWorkerError, "cannot contain stop_investigation"):
+            run_provider_worker(io.StringIO(json.dumps(self._task()) + "\n"), output_stream, MixedStopTransport())
+        self.assertEqual(output_stream.getvalue(), "")
+
     def test_mock_worker_runs_through_parent_owned_workspace_tools(self):
         family = load_case_family(ROOT / "behavior_cases" / "dashboard-filter-refresh" / "family.json")
         condition = ModelCondition(
@@ -931,7 +1134,13 @@ class ProviderWorkerTests(unittest.TestCase):
                             "call_id": "fake-inspect",
                             "name": "request_evidence",
                             "arguments": '{"action":"inspect","target":"app/dashboard/page.tsx"}',
-                        }
+                        },
+                        {
+                            "type": "function_call",
+                            "call_id": "fake-cache-inspect",
+                            "name": "request_evidence",
+                            "arguments": '{"action":"inspect","target":"lib/cache.ts"}',
+                        },
                     ]
                 else:
                     output = [
@@ -1000,8 +1209,14 @@ class ProviderWorkerTests(unittest.TestCase):
             self.assertEqual(len(server.payloads), 2)
             self.assertFalse(server.payloads[0]["store"])
             self.assertNotIn("reasoning", server.payloads[0])
-            self.assertEqual(server.payloads[1]["input"][-1]["type"], "function_call_output")
-            self.assertEqual(server.payloads[1]["input"][-1]["call_id"], "fake-inspect")
+            self.assertEqual(
+                [item["type"] for item in server.payloads[1]["input"][-4:]],
+                ["function_call", "function_call", "function_call_output", "function_call_output"],
+            )
+            self.assertEqual(
+                [item["call_id"] for item in server.payloads[1]["input"][-4:]],
+                ["fake-inspect", "fake-cache-inspect", "fake-inspect", "fake-cache-inspect"],
+            )
         finally:
             server.shutdown()
             thread.join(timeout=5)
