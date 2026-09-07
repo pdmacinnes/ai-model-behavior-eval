@@ -341,6 +341,26 @@ class ProviderWorkerTests(unittest.TestCase):
             parse_google_gemini_response(missing_signature)
         with self.assertRaisesRegex(ProviderTransportError, "exactly one candidate"):
             parse_google_gemini_response({"candidates": [{}, {}]})
+        multiple_calls = {
+            "candidates": [
+                {
+                    "content": {
+                        "parts": [
+                            {
+                                "functionCall": {"id": "one", "name": "request_evidence", "args": {}},
+                                "thoughtSignature": "opaque-one",
+                            },
+                            {
+                                "functionCall": {"id": "two", "name": "stop_investigation", "args": {}},
+                                "thoughtSignature": "opaque-two",
+                            },
+                        ]
+                    }
+                }
+            ]
+        }
+        with self.assertRaisesRegex(ProviderTransportError, "at most one function call"):
+            parse_google_gemini_response(multiple_calls)
 
     def test_gemini_model_id_and_base_url_fail_closed(self):
         tools = [{"type": "function", "function": {"name": "stop_investigation", "parameters": {}}}]

@@ -516,6 +516,12 @@ def build_google_gemini_request(
     return request
 
 
+def _gemini_response_string(value: Any, label: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise ProviderTransportError(f"Gemini response is missing {label}")
+    return value
+
+
 def _parse_google_gemini_response_content(
     value: Any,
     *,
@@ -551,8 +557,8 @@ def _parse_google_gemini_response_content(
         function_call = part["functionCall"]
         if not isinstance(function_call, dict):
             raise ProviderTransportError("Gemini function call must be an object")
-        call_id = _require_string(function_call.get("id"), "Gemini function call id")
-        name = _require_string(function_call.get("name"), "Gemini function name")
+        call_id = _gemini_response_string(function_call.get("id"), "function call id")
+        name = _gemini_response_string(function_call.get("name"), "function name")
         if name not in SUPPORTED_TOOL_METHODS:
             raise ProviderTransportError("Gemini returned an unsupported tool")
         arguments = function_call.get("args")
@@ -758,7 +764,7 @@ class GoogleGeminiTransport:
         self._native_contents: list[dict[str, Any]] | None = None
         self._pending_call: tuple[str, str] | None = None
 
-    def _seed_history(self, messages: list[dict[str, Any]]) -> None:
+    def _seed_history(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if not isinstance(messages, list) or len(messages) != 1 or not isinstance(messages[0], dict):
             raise ProviderWorkerError("Gemini initial conversation must contain one user message")
         if messages[0].get("role") != "user":
@@ -766,9 +772,9 @@ class GoogleGeminiTransport:
         prompt = messages[0].get("content")
         if not isinstance(prompt, str):
             raise ProviderWorkerError("Gemini user message content must be text")
-        self._native_contents = [{"role": "user", "parts": [{"text": prompt}]}]
+        return [{"role": "user", "parts": [{"text": prompt}]}]
 
-    def _append_function_result(self, messages: list[dict[str, Any]]) -> None:
+    def _build_function_result(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
         if self._native_contents is None or self._pending_call is None:
             raise ProviderWorkerError("Gemini conversation has no pending function call")
         if not messages or not isinstance(messages[-1], dict) or messages[-1].get("role") != "tool":
@@ -803,20 +809,18 @@ class GoogleGeminiTransport:
         if not isinstance(function, dict) or function.get("name") != name:
             raise ProviderWorkerError("Gemini function result name did not match the pending function call")
 
-        self._native_contents.append(
-            {
-                "role": "user",
-                "parts": [
-                    {
-                        "functionResponse": {
-                            "name": name,
-                            "response": {"result": result_value},
-                            "id": call_id,
-                        }
+        return {
+            "role": "user",
+            "parts": [
+                {
+                    "functionResponse": {
+                        "name": name,
+                        "response": {"result": result_value},
+                        "id": call_id,
                     }
-                ],
-            }
-        )
+                }
+            ],
+        }
 
     def request(
         self,
@@ -833,15 +837,14 @@ class GoogleGeminiTransport:
         if not self.api_key:
             raise ProviderTransportError("provider credential is missing")
         if self._native_contents is None:
-            self._seed_history(messages)
+            staged_contents = self._seed_history(messages)
         elif self._pending_call is not None:
-            self._append_function_result(messages)
+            staged_contents = [*self._native_contents, self._build_function_result(messages)]
         else:
             raise ProviderWorkerError("Gemini conversation received a request after final completion")
 
-        assert self._native_contents is not None
         payload = build_google_gemini_request(
-            self._native_contents,
+            staged_contents,
             tools,
             model_id=model_id,
             reasoning_effort=reasoning_effort,
@@ -877,7 +880,7 @@ class GoogleGeminiTransport:
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise ProviderTransportError("provider response was not valid JSON") from exc
         reply, native_content = _parse_google_gemini_response_content(parsed, max_text_chars=self.max_text_chars)
-        self._native_contents.append(native_content)
+        self._native_contents = [*staged_contents, native_content]
         self._pending_call = None
         if reply.tool_calls:
             call = reply.tool_calls[0]
