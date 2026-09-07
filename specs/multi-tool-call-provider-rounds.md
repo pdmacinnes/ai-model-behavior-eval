@@ -28,7 +28,7 @@ This spec supersedes the "at most one tool call" clauses in `specs/trusted-jsonl
 - For a response with multiple tool calls, the worker emits the existing `call` messages one at a time in provider order and waits for each matching `result` before emitting the next one. Parent execution is sequential, never concurrent.
 - The worker validates the complete provider call list before emitting the first parent call. This prevents a malformed later call from causing a partial batch.
 - A parent tool error is returned to the provider as data for that call. The worker still collects later calls from the same provider response unless the parent process or protocol fails.
-- A multi-call response containing `stop_investigation` is rejected before any parent call. `stop_investigation` remains valid only as a single call and retains the existing successful-stop mapping.
+- A multi-call response may contain `stop_investigation` only as its final call. Earlier calls execute sequentially, then the stop call executes last. A stop call appearing before another call is rejected before any parent call. A successful final stop emits `stopped` without another provider request; a failed stop result remains provider-visible data and the worker may continue.
 
 ### Provider continuation
 
@@ -71,7 +71,7 @@ No live provider call is made by implementation or automated tests. The existing
 - [ ] The worker emits existing single-call JSONL messages sequentially for multi-call provider responses without introducing concurrent workspace access.
 - [ ] The worker validates the complete batch before its first parent call.
 - [ ] The worker appends one complete assistant tool-call message and ordered tool-result messages before the next provider request.
-- [ ] A multi-call response containing `stop_investigation` fails closed before any parent action; a single successful stop still maps to `stopped`.
+- [ ] A multi-call response accepts `stop_investigation` only as the final call, executes earlier calls before it, maps a successful final stop to `stopped`, and rejects a non-final stop before parent dispatch.
 - [ ] Native Gemini continues to reject multiple function calls and retains its existing signature-bearing single-call continuation behavior.
 - [ ] Parent tool errors remain provider-visible data and do not trigger automatic retries or hidden bypasses.
 - [ ] Provider round, request, response, conversation, JSONL, evidence budget, event, timeout, verifier, and cleanup bounds remain enforced.

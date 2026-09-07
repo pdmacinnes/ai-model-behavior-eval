@@ -1146,8 +1146,11 @@ def run_provider_worker(
             )
             return
 
-        if len(tool_calls) > 1 and any(call.name == "stop_investigation" for call in tool_calls):
-            raise ProviderWorkerError("a multi-call provider response cannot contain stop_investigation")
+        stop_indexes = [index for index, call in enumerate(tool_calls) if call.name == "stop_investigation"]
+        if stop_indexes and stop_indexes != [len(tool_calls) - 1]:
+            raise ProviderWorkerError(
+                "a multi-call provider response may contain stop_investigation only as its final call"
+            )
         results: list[tuple[ProviderToolCall, bool, Any]] = []
         for call in tool_calls:
             _write_json_line(
@@ -1198,7 +1201,7 @@ def run_provider_worker(
             max_conversation_chars=max_conversation_chars,
             max_tool_definition_bytes=max_tool_definition_bytes,
         )
-        if len(tool_calls) == 1 and tool_calls[0].name == "stop_investigation" and results[0][1]:
+        if tool_calls[-1].name == "stop_investigation" and results[-1][1]:
             _write_json_line(
                 output_stream,
                 {

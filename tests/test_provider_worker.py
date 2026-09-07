@@ -1131,10 +1131,14 @@ class ProviderWorkerTests(unittest.TestCase):
             run_provider_worker(io.StringIO(json.dumps(self._task()) + "\n"), output_stream, InvalidBatchTransport())
         self.assertEqual(output_stream.getvalue(), "")
 
-    def test_worker_rejects_multi_call_stop_before_dispatch(self):
+    def test_worker_accepts_final_stop_after_ordered_multi_call_batch(self):
         class MixedStopTransport:
+            def __init__(self):
+                self.requests = []
+
             def request(self, messages, tools, *, model_id, reasoning_effort):
-                del messages, tools, model_id, reasoning_effort
+                del tools, model_id, reasoning_effort
+                self.requests.append(json.loads(json.dumps(messages)))
                 return ProviderReply(
                     tool_calls=(
                         ProviderToolCall("call-1", "request_evidence", {}),
@@ -1142,8 +1146,38 @@ class ProviderWorkerTests(unittest.TestCase):
                     )
                 )
 
+        input_stream = io.StringIO(
+            "\n".join(
+                [
+                    json.dumps(self._task()),
+                    json.dumps({"type": "result", "id": "call-1", "ok": True, "result": {"content": "page"}}),
+                    json.dumps({"type": "result", "id": "call-stop", "ok": True, "result": {"accepted": True}}),
+                ]
+            )
+            + "\n"
+        )
         output_stream = io.StringIO()
-        with self.assertRaisesRegex(ProviderWorkerError, "cannot contain stop_investigation"):
+        transport = MixedStopTransport()
+        run_provider_worker(input_stream, output_stream, transport)
+        messages = [json.loads(line) for line in output_stream.getvalue().splitlines()]
+        self.assertEqual([message["type"] for message in messages], ["call", "call", "final"])
+        self.assertEqual([message["id"] for message in messages[:2]], ["call-1", "call-stop"])
+        self.assertEqual(messages[-1]["status"], "stopped")
+        self.assertEqual(len(transport.requests), 1)
+
+    def test_worker_rejects_non_final_multi_call_stop_before_dispatch(self):
+        class MixedStopTransport:
+            def request(self, messages, tools, *, model_id, reasoning_effort):
+                del messages, tools, model_id, reasoning_effort
+                return ProviderReply(
+                    tool_calls=(
+                        ProviderToolCall("call-stop", "stop_investigation", {}),
+                        ProviderToolCall("call-1", "request_evidence", {}),
+                    )
+                )
+
+        output_stream = io.StringIO()
+        with self.assertRaisesRegex(ProviderWorkerError, "only as its final call"):
             run_provider_worker(io.StringIO(json.dumps(self._task()) + "\n"), output_stream, MixedStopTransport())
         self.assertEqual(output_stream.getvalue(), "")
 
