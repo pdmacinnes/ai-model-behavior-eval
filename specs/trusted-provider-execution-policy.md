@@ -64,10 +64,11 @@ The provider transport must enforce independent limits before every HTTP request
 - Maximum tool-definition bytes.
 - Existing maximum provider response bytes and response-text characters.
 - Existing maximum provider rounds and parent JSONL message size.
+- Provider request timeout, defaulting to 120 seconds and optionally set with the allowlisted `--request-timeout-seconds` flag.
 
 The request body must be serialized once, measured, and rejected before `urlopen` when any request bound is exceeded. Tool results and assistant messages must be bounded as they enter the conversation so the worker cannot defer the overflow until a later request. Error messages must identify only the bound that failed and must not include request bodies, credentials, workspace contents, or authorization headers.
 
-Concrete default ceilings may be chosen in implementation, but they must be positive, documented next to the transport, and covered by overflow tests that never open external sockets.
+Concrete default ceilings may be chosen in implementation, but they must be positive, documented next to the transport, and covered by overflow tests that never open external sockets. Timeout and connection diagnostics must be category-only and must not retain exception text.
 
 ### Normal live batch flow
 

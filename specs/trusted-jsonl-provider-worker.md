@@ -45,7 +45,7 @@ The initial implementation includes:
 - A deterministic mock transport for unit and integration tests.
 - An OpenAI-compatible HTTP transport implementation whose real network path is disabled unless an explicit future execution gate is satisfied.
 
-The HTTP transport must use a bounded request timeout, bounded response size, explicit model selection, and structured parsing. It must reject malformed responses, missing choices, unsupported tool-call shapes, and provider responses that exceed configured limits.
+The HTTP transport must use a bounded request timeout, bounded response size, explicit model selection, and structured parsing. The worker defaults to a 120-second provider request timeout and may receive a positive finite `--request-timeout-seconds` override through the trusted execution-policy allowlist. It must reject malformed responses, missing choices, unsupported tool-call shapes, and provider responses that exceed configured limits.
 
 OpenAI-compatible and OpenAI Responses provider rounds may return up to `MAX_PROVIDER_TOOL_CALLS_PER_RESPONSE` supported tool calls, with the provider's order preserved. The worker emits the existing JSONL `call` messages sequentially and never executes them concurrently. A response that exceeds the bound, contains duplicate call ids within that response, or contains an unsupported method is fail-closed as an adapter error. Native Gemini remains single-call because its signature-bearing continuation history is transport-owned.
 
@@ -92,6 +92,7 @@ Tool calls must preserve the existing method names and argument schemas: `reques
 - A tool result with an error is returned to the model as data; the worker must not retry the tool automatically or bypass the parent.
 - The worker stops after a configured maximum number of provider rounds and reports a bounded adapter error rather than looping indefinitely.
 - Provider request, response, and metadata sizes are bounded independently of the parent JSONL message limit.
+- Each provider HTTP request uses the bounded worker timeout. Timeout and connection failures are categorized without retaining exception text, response bodies, or request content.
 - Provider timeouts and transport failures remain parent-observable adapter failures and cannot mark a behavioral refusal or skip a verifier by themselves.
 - A model that reports an unsupported infrastructure status is normalized by the existing parent adapter behavior and cannot suppress verification after an edit.
 - Missing credentials, disallowed credential environment names, or a disabled network gate prevent real provider execution before any request is sent.

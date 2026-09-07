@@ -111,6 +111,8 @@ class ExecutionPolicyTests(unittest.TestCase):
                 "48",
                 "--max-conversation-chars",
                 "192000",
+                "--request-timeout-seconds",
+                "120.0",
             ),
         )
         validate_execution_authorization(
@@ -153,6 +155,23 @@ class ExecutionPolicyTests(unittest.TestCase):
         with self.assertRaisesRegex(ExecutionPolicyError, "unapproved argument"):
             validate_execution_authorization(
                 _registration(_live_condition(command=(*_live_condition().command, "--api-key-env", "OTHER"))),
+                allow_network=True,
+                environment={PROVIDER_CREDENTIAL_ENV: "secret"},
+            )
+        with self.assertRaisesRegex(ExecutionPolicyError, "positive numbers"):
+            validate_execution_authorization(
+                _registration(
+                    _live_condition(
+                        command=(
+                            sys.executable,
+                            str(APPROVED_WORKER),
+                            "--transport",
+                            "openai-compatible",
+                            "--request-timeout-seconds",
+                            "0",
+                        )
+                    )
+                ),
                 allow_network=True,
                 environment={PROVIDER_CREDENTIAL_ENV: "secret"},
             )

@@ -14,6 +14,7 @@ from pathlib import Path
 
 from evidence_eval.execution_policy import NETWORK_AUTHORIZATION_ENV, PROVIDER_BASE_URL_ENV, PROVIDER_CREDENTIAL_ENV
 from evidence_eval.provider_worker import (
+    DEFAULT_PROVIDER_TIMEOUT_SECONDS,
     GoogleGeminiTransport,
     MAX_PROVIDER_TOOL_CALLS_PER_RESPONSE,
     OpenAICompatibleTransport,
@@ -761,7 +762,7 @@ class ProviderWorkerTests(unittest.TestCase):
             "evidence_eval.provider_worker.urllib.request.urlopen",
             side_effect=urllib.error.URLError("secret-body"),
         ):
-            with self.assertRaisesRegex(ProviderTransportError, "provider request failed") as context:
+            with self.assertRaisesRegex(ProviderTransportError, "provider network error") as context:
                 transport.request(
                     [{"role": "user", "content": "investigate"}],
                     [{"type": "function", "function": {"name": "request_evidence", "parameters": {}}}],
@@ -769,6 +770,25 @@ class ProviderWorkerTests(unittest.TestCase):
                     reasoning_effort=None,
                 )
         self.assertNotIn("secret-body", str(context.exception))
+
+    def test_http_timeout_is_categorized_without_exception_details(self):
+        transport = OpenAICompatibleTransport(
+            base_url="https://example.invalid/v1",
+            api_key="secret",
+            allow_network=True,
+        )
+        with patch(
+            "evidence_eval.provider_worker.urllib.request.urlopen",
+            side_effect=TimeoutError("secret-timeout-detail"),
+        ):
+            with self.assertRaisesRegex(ProviderTransportError, "provider request timed out") as context:
+                transport.request(
+                    [{"role": "user", "content": "investigate"}],
+                    [{"type": "function", "function": {"name": "request_evidence", "parameters": {}}}],
+                    model_id="model-a",
+                    reasoning_effort=None,
+                )
+        self.assertNotIn("secret-timeout-detail", str(context.exception))
 
     def test_fake_http_transport_parses_without_external_network(self):
         class FakeResponse:
@@ -908,7 +928,7 @@ class ProviderWorkerTests(unittest.TestCase):
             "evidence_eval.provider_worker.urllib.request.urlopen",
             side_effect=urllib.error.URLError("secret-body"),
         ):
-            with self.assertRaisesRegex(ProviderTransportError, "provider request failed") as context:
+            with self.assertRaisesRegex(ProviderTransportError, "provider network error") as context:
                 transport.request(
                     [{"role": "user", "content": "investigate"}],
                     [{"type": "function", "function": {"name": "request_evidence", "parameters": {}}}],
@@ -988,16 +1008,37 @@ class ProviderWorkerTests(unittest.TestCase):
                             "48",
                             "--max-conversation-chars",
                             "192000",
+                            "--request-timeout-seconds",
+                            "45.5",
                         ]
                     ),
                     0,
                 )
         transport = run_worker.call_args.args[2]
+        self.assertEqual(transport.timeout_seconds, 45.5)
         self.assertEqual(transport.max_conversation_messages, 48)
         self.assertEqual(transport.max_conversation_chars, 192000)
         self.assertEqual(run_worker.call_args.kwargs["max_rounds"], 24)
         self.assertEqual(run_worker.call_args.kwargs["max_conversation_messages"], 48)
         self.assertEqual(run_worker.call_args.kwargs["max_conversation_chars"], 192000)
+
+    def test_worker_cli_uses_bounded_default_provider_timeout(self):
+        with patch.dict(
+            os.environ,
+            {
+                PROVIDER_BASE_URL_ENV: "https://example.invalid/v1",
+                PROVIDER_CREDENTIAL_ENV: "secret",
+                NETWORK_AUTHORIZATION_ENV: "1",
+            },
+            clear=True,
+        ):
+            with patch("evidence_eval.provider_worker.run_provider_worker") as run_worker:
+                self.assertEqual(main(["--transport", "openai-compatible"]), 0)
+        self.assertEqual(run_worker.call_args.args[2].timeout_seconds, DEFAULT_PROVIDER_TIMEOUT_SECONDS)
+
+    def test_worker_rejects_non_positive_provider_timeout(self):
+        with self.assertRaises(SystemExit):
+            main(["--request-timeout-seconds", "0"])
 
     def test_worker_rejects_local_network_and_credential_overrides(self):
         with self.assertRaises(SystemExit):

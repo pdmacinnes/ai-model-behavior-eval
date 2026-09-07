@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import sys
@@ -31,6 +32,7 @@ DEFAULT_MAX_CONVERSATION_CHARS = 128_000
 DEFAULT_MAX_TOOL_DEFINITION_BYTES = 32_000
 DEFAULT_MAX_RESPONSE_BYTES = 128_000
 DEFAULT_MAX_RESPONSE_TEXT_CHARS = 32_000
+DEFAULT_PROVIDER_TIMEOUT_SECONDS = 120.0
 _GEMINI_MODEL_SEGMENT = re.compile(r"[^/\?#\s]+\Z")
 _GEMINI_REASONING_LEVELS = {
     "minimal": "minimal",
@@ -46,6 +48,25 @@ class ProviderWorkerError(RuntimeError):
 
 class ProviderTransportError(ProviderWorkerError):
     pass
+
+
+def _validate_provider_timeout(timeout_seconds: float) -> float:
+    if not isinstance(timeout_seconds, (int, float)) or not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+        raise ValueError("provider timeout must be positive and finite")
+    return float(timeout_seconds)
+
+
+def _provider_request_failure(exc: BaseException) -> ProviderTransportError:
+    if isinstance(exc, TimeoutError):
+        return ProviderTransportError("provider request timed out")
+    if isinstance(exc, urllib.error.URLError):
+        reason = getattr(exc, "reason", None)
+        if isinstance(reason, TimeoutError):
+            return ProviderTransportError("provider request timed out")
+        return ProviderTransportError("provider network error")
+    if isinstance(exc, OSError):
+        return ProviderTransportError("provider connection failed")
+    return ProviderTransportError("provider request failed")
 
 
 @dataclass(frozen=True)
@@ -631,7 +652,7 @@ class OpenAICompatibleTransport:
         *,
         base_url: str,
         api_key: str,
-        timeout_seconds: float = 30.0,
+        timeout_seconds: float = DEFAULT_PROVIDER_TIMEOUT_SECONDS,
         max_response_bytes: int = DEFAULT_MAX_RESPONSE_BYTES,
         max_text_chars: int = DEFAULT_MAX_RESPONSE_TEXT_CHARS,
         max_request_bytes: int = DEFAULT_MAX_REQUEST_BYTES,
@@ -642,6 +663,7 @@ class OpenAICompatibleTransport:
     ) -> None:
         if not base_url or "\n" in base_url or "\r" in base_url:
             raise ValueError("provider base URL must be a non-empty single-line value")
+        timeout_seconds = _validate_provider_timeout(timeout_seconds)
         if any(
             value <= 0
             for value in (
@@ -703,8 +725,8 @@ class OpenAICompatibleTransport:
                 body = response.read(self.max_response_bytes + 1)
         except urllib.error.HTTPError as exc:
             raise ProviderTransportError(f"provider HTTP error {exc.code}") from None
-        except (urllib.error.URLError, TimeoutError, OSError):
-            raise ProviderTransportError("provider request failed") from None
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            raise _provider_request_failure(exc) from None
         if len(body) > self.max_response_bytes:
             raise ProviderTransportError("provider response exceeded the byte bound")
         try:
@@ -752,8 +774,8 @@ class OpenAIResponsesTransport(OpenAICompatibleTransport):
                 body = response.read(self.max_response_bytes + 1)
         except urllib.error.HTTPError as exc:
             raise ProviderTransportError(f"provider HTTP error {exc.code}") from None
-        except (urllib.error.URLError, TimeoutError, OSError):
-            raise ProviderTransportError("provider request failed") from None
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            raise _provider_request_failure(exc) from None
         if len(body) > self.max_response_bytes:
             raise ProviderTransportError("provider response exceeded the byte bound")
         try:
@@ -771,7 +793,7 @@ class GoogleGeminiTransport:
         *,
         base_url: str,
         api_key: str,
-        timeout_seconds: float = 30.0,
+        timeout_seconds: float = DEFAULT_PROVIDER_TIMEOUT_SECONDS,
         max_response_bytes: int = DEFAULT_MAX_RESPONSE_BYTES,
         max_text_chars: int = DEFAULT_MAX_RESPONSE_TEXT_CHARS,
         max_request_bytes: int = DEFAULT_MAX_REQUEST_BYTES,
@@ -782,6 +804,7 @@ class GoogleGeminiTransport:
     ) -> None:
         if "\n" in base_url or "\r" in base_url:
             raise ValueError("provider base URL must be a single-line value")
+        timeout_seconds = _validate_provider_timeout(timeout_seconds)
         if any(
             value <= 0
             for value in (
@@ -915,8 +938,8 @@ class GoogleGeminiTransport:
                 body = response.read(self.max_response_bytes + 1)
         except urllib.error.HTTPError as exc:
             raise ProviderTransportError(f"provider HTTP error {exc.code}") from None
-        except (urllib.error.URLError, TimeoutError, OSError):
-            raise ProviderTransportError("provider request failed") from None
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            raise _provider_request_failure(exc) from None
         if len(body) > self.max_response_bytes:
             raise ProviderTransportError("provider response exceeded the byte bound")
         try:
@@ -1210,7 +1233,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-message-chars", type=int, default=32_000)
     parser.add_argument("--max-conversation-messages", type=int, default=DEFAULT_MAX_CONVERSATION_MESSAGES)
     parser.add_argument("--max-conversation-chars", type=int, default=DEFAULT_MAX_CONVERSATION_CHARS)
+    parser.add_argument("--request-timeout-seconds", type=float, default=DEFAULT_PROVIDER_TIMEOUT_SECONDS)
     args = parser.parse_args(argv)
+    if not math.isfinite(args.request_timeout_seconds) or args.request_timeout_seconds <= 0:
+        parser.error("--request-timeout-seconds must be a positive finite number")
     try:
         if args.transport == "mock":
             transport: ProviderTransport = ScriptedMockTransport()
@@ -1218,6 +1244,7 @@ def main(argv: list[str] | None = None) -> int:
             transport = OpenAIResponsesTransport(
                 base_url=args.base_url,
                 api_key=os.environ.get(PROVIDER_CREDENTIAL_ENV, ""),
+                timeout_seconds=args.request_timeout_seconds,
                 max_conversation_messages=args.max_conversation_messages,
                 max_conversation_chars=args.max_conversation_chars,
                 allow_network=os.environ.get(NETWORK_AUTHORIZATION_ENV) == "1",
@@ -1226,6 +1253,7 @@ def main(argv: list[str] | None = None) -> int:
             transport = GoogleGeminiTransport(
                 base_url=args.base_url,
                 api_key=os.environ.get(PROVIDER_CREDENTIAL_ENV, ""),
+                timeout_seconds=args.request_timeout_seconds,
                 max_conversation_messages=args.max_conversation_messages,
                 max_conversation_chars=args.max_conversation_chars,
                 allow_network=os.environ.get(NETWORK_AUTHORIZATION_ENV) == "1",
@@ -1234,6 +1262,7 @@ def main(argv: list[str] | None = None) -> int:
             transport = OpenAICompatibleTransport(
                 base_url=args.base_url,
                 api_key=os.environ.get(PROVIDER_CREDENTIAL_ENV, ""),
+                timeout_seconds=args.request_timeout_seconds,
                 max_conversation_messages=args.max_conversation_messages,
                 max_conversation_chars=args.max_conversation_chars,
                 allow_network=os.environ.get(NETWORK_AUTHORIZATION_ENV) == "1",

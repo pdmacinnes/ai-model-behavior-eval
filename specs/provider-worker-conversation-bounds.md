@@ -13,8 +13,9 @@
   - `--max-rounds`;
   - `--max-conversation-messages`;
   - `--max-conversation-chars`.
+- The provider worker CLI also accepts a positive finite `--request-timeout-seconds` value. Its default is 120 seconds.
 - The worker applies the conversation bounds both in its loop and inside the provider transport request builder.
-- The trusted execution policy allowlists only these numeric bounds in addition to the existing approved worker arguments. Duplicate, missing, non-integer, or non-positive values remain rejected.
+- The trusted execution policy allowlists only these numeric bounds in addition to the existing approved worker arguments. Duplicate, missing, malformed, non-finite, or non-positive values remain rejected.
 - The model-matrix generator uses bounded pilot headroom of 24 rounds, 48 conversation messages, and 192,000 conversation characters. The existing parent trial timeout and evidence budget remain unchanged.
 - The generator accepts a safe `--batch-label` and includes it in generated batch identifiers. The default remains `v1`; reruns use a new label such as `bounds-v2`.
 - Existing registrations and artifacts are never overwritten. No live provider call occurs during implementation or verification.
@@ -24,13 +25,14 @@
 - Non-positive or malformed conversation bounds fail before provider execution.
 - A worker that still exceeds the explicit bound fails closed as an infrastructure error; the change does not convert exhaustion into a behavioral result.
 - The transport and worker loop must use the same configured bounds so a transport-level default cannot censor a run earlier than the worker-level bound.
+- The provider request timeout is finite and remains below the parent subprocess timeout for live registrations.
 - The execution policy rejects unapproved worker flags and duplicate bound flags.
 - A batch label must be a safe identifier and must not permit path separators or shell syntax.
 - An existing batch label or output file remains protected by the current no-overwrite behavior.
 
 ## Acceptance Criteria
 
-- [ ] Worker CLI parses and applies all three configurable conversation bounds.
+- [ ] Worker CLI parses and applies all three configurable conversation bounds and the provider request timeout.
 - [ ] OpenAI-compatible, Responses, and native Gemini transports enforce the configured conversation bounds.
 - [ ] Trusted execution policy accepts only the approved positive numeric bound flags.
 - [ ] Matrix registrations include the reviewed 24-round, 48-message, and 192,000-character limits.

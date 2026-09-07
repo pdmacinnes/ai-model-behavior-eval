@@ -21,7 +21,7 @@
 
 - The existing worker entrypoint remains `scripts/openai_compatible_workspace_worker.py`.
 - The worker accepts a new explicit transport value, `openai-responses`, in addition to the existing `mock` and `openai-compatible` values.
-- The execution-policy allowlist for network-required conditions accepts the reviewed worker command with `--transport openai-compatible` **or** `--transport openai-responses`, and continues to reject wrappers, arbitrary commands, `--allow-network`, and `--api-key-env`. Allowed optional numeric flags remain `--max-rounds` and `--max-message-chars` only.
+- The execution-policy allowlist for network-required conditions accepts the reviewed worker command with `--transport openai-compatible` **or** `--transport openai-responses`, and continues to reject wrappers, arbitrary commands, `--allow-network`, and `--api-key-env`. Allowed optional numeric flags are `--max-rounds`, `--max-message-chars`, `--max-conversation-messages`, `--max-conversation-chars`, and the positive finite `--request-timeout-seconds`.
 - Any condition whose command selects `--transport openai-responses` must also declare `network_required: true`. A Responses transport with `network_required: false` fails execution-policy validation before worker startup.
 - The live parent still supplies `EVIDENCE_EVAL_NETWORK_AUTHORIZED=1` only for an authorized network condition and passes only `EVIDENCE_EVAL_PROVIDER_API_KEY` to that child.
 - The worker reads the existing task fields: prompt, optional initial_observation, tool_contract, and model_condition containing provider, model_id, adapter_id, and nullable reasoning_effort.
@@ -51,7 +51,7 @@
 
 ### Bounds and lifecycle
 
-- Existing independent bounds remain enforced for serialized request bytes, conversation message count, conversation characters, tool-definition bytes, response bytes, response text, provider rounds, and parent JSONL messages. Defaults and measurement helpers may be shared with the Chat Completions transport; the Responses path must not weaken them.
+- Existing independent bounds remain enforced for serialized request bytes, conversation message count, conversation characters, tool-definition bytes, response bytes, response text, provider rounds, parent JSONL messages, and the bounded provider request timeout. Defaults and measurement helpers may be shared with the Chat Completions transport; the Responses path must not weaken them.
 - Responses-specific wrapper overhead and `function_call_output` items are included in the pre-request serialized request-byte measurement.
 - Conversation and tool-result bounds are checked when items are translated/appended, before the next network request.
 - The parent continues to terminate timed-out children, skip verification for censored trials, and clean up according to the existing workspace lifecycle.
@@ -68,6 +68,7 @@
 - When translating the worker conversation into Responses input, a `function_call_output` whose call id does not match the preceding function-call item fails closed before network I/O and cannot mutate the workspace.
 - An incomplete, failed, or otherwise non-completed Responses response is an infrastructure/provider failure. The parent records censorship or adapter failure using existing semantics and does not invoke a verifier on a timed-out active child.
 - Provider HTTP errors are bounded and sanitized. The implementation must not include response bodies, free-text error messages, request content, credentials, authorization headers, workspace paths, or hidden case data in stderr, metadata, or public artifacts.
+- Provider timeouts and connection failures are reported only with safe categories such as timeout, network error, or connection failure; exception text is not retained.
 - Responses API output containing reasoning summaries or encrypted reasoning content is not captured, requested, published, or used as a behavioral annotation.
 - An oversized translated request or conversation fails before the HTTP call. Tests prove the fake network function is not called in each overflow case.
 - A missing credential or absent parent network marker fails before HTTP I/O.

@@ -42,7 +42,7 @@ This spec supersedes the "at most one tool call" clauses in `specs/trusted-jsonl
 
 - Existing parent event traces remain the source of truth for accepted, rejected, and failed workspace actions. No provider response body, credential, workspace path, hidden cause, verifier object, or private reasoning is added to artifacts or diagnostics.
 - Public release and report formats remain unchanged. Sequential actions from a multi-call provider response must remain visible through the existing action and annotation fields.
-- Existing JSONL, provider request, response, conversation, and parent workspace bounds remain enforced. The eight-call response limit is independent of those bounds.
+- Existing JSONL, provider request, response, conversation, parent workspace, and provider request-timeout bounds remain enforced. The eight-call response limit is independent of those bounds.
 
 ## Edge Cases & Error Handling
 

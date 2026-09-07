@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import re
 import sys
@@ -18,6 +19,7 @@ NETWORK_AUTHORIZATION_ENV = "EVIDENCE_EVAL_NETWORK_AUTHORIZED"
 PROVIDER_CREDENTIAL_ENV = "EVIDENCE_EVAL_PROVIDER_API_KEY"
 PROVIDER_BASE_URL_ENV = "EVIDENCE_EVAL_PROVIDER_BASE_URL"
 _POSITIVE_INTEGER = re.compile(r"[1-9][0-9]*\Z")
+_POSITIVE_DECIMAL = re.compile(r"(?:[0-9]+(?:\.[0-9]+)?|\.[0-9]+)\Z")
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 APPROVED_PROVIDER_ENTRYPOINT = (_PROJECT_ROOT / "scripts" / "openai_compatible_workspace_worker.py").resolve()
 
@@ -45,17 +47,25 @@ def validate_trusted_provider_command(condition: "PilotCondition") -> None:
     index = 4
     seen: set[str] = set()
     allowed_numeric = {
-        "--max-rounds",
-        "--max-message-chars",
-        "--max-conversation-messages",
-        "--max-conversation-chars",
+        "--max-rounds": _POSITIVE_INTEGER,
+        "--max-message-chars": _POSITIVE_INTEGER,
+        "--max-conversation-messages": _POSITIVE_INTEGER,
+        "--max-conversation-chars": _POSITIVE_INTEGER,
+        "--request-timeout-seconds": _POSITIVE_DECIMAL,
     }
     while index < len(command):
         flag = command[index]
         if flag not in allowed_numeric or flag in seen:
             raise ExecutionPolicyError("network-required worker command contains an unapproved argument")
-        if index + 1 >= len(command) or not _POSITIVE_INTEGER.fullmatch(command[index + 1]):
-            raise ExecutionPolicyError("network-required worker bound arguments must be positive integers")
+        if index + 1 >= len(command):
+            raise ExecutionPolicyError("network-required worker bound arguments must be positive numbers")
+        value = command[index + 1]
+        try:
+            positive_finite = math.isfinite(float(value)) and float(value) > 0
+        except ValueError:
+            positive_finite = False
+        if not allowed_numeric[flag].fullmatch(value) or not positive_finite:
+            raise ExecutionPolicyError("network-required worker bound arguments must be positive numbers")
         seen.add(flag)
         index += 2
 
