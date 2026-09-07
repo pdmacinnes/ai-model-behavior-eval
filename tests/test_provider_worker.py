@@ -150,6 +150,26 @@ class ProviderWorkerTests(unittest.TestCase):
         with self.assertRaisesRegex(ProviderTransportError, "too many"):
             parse_openai_compatible_response(oversized)
 
+    def test_openai_response_parser_accepts_eight_tool_calls_at_the_bound(self):
+        response = {
+            "choices": [
+                {
+                    "message": {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": f"call-{index}",
+                                "function": {"name": "request_evidence", "arguments": "{}"},
+                            }
+                            for index in range(MAX_PROVIDER_TOOL_CALLS_PER_RESPONSE)
+                        ],
+                    }
+                }
+            ]
+        }
+        reply = parse_openai_compatible_response(response)
+        self.assertEqual(len(reply.tool_calls), MAX_PROVIDER_TOOL_CALLS_PER_RESPONSE)
+
     def test_openai_response_parser_rejects_oversized_text_and_bad_arguments(self):
         oversized = {"choices": [{"message": {"content": "too long", "tool_calls": []}}]}
         with self.assertRaises(ProviderTransportError):

@@ -16,7 +16,7 @@ This spec supersedes the "at most one tool call" clauses in `specs/trusted-jsonl
 
 ### Provider response boundary
 
-- `ProviderReply.tool_calls` may contain zero through `MAX_PROVIDER_TOOL_CALLS_PER_RESPONSE` `ProviderToolCall` values for the OpenAI-compatible and OpenAI Responses transports. The implementation sets `MAX_PROVIDER_TOOL_CALLS_PER_RESPONSE = 4`; this is a safety bound on one provider response, not a model-quality score.
+- `ProviderReply.tool_calls` may contain zero through `MAX_PROVIDER_TOOL_CALLS_PER_RESPONSE` `ProviderToolCall` values for the OpenAI-compatible and OpenAI Responses transports. The implementation sets `MAX_PROVIDER_TOOL_CALLS_PER_RESPONSE = 8`; this is a safety bound on one provider response, not a model-quality score. The limit was widened from four after the first live Grok smoke produced more than four calls in one response.
 - Tool calls must retain provider order. Every call must have a non-empty id unique within that provider response, a supported method name, and a JSON-object argument value.
 - A response with more than `MAX_PROVIDER_TOOL_CALLS_PER_RESPONSE` calls, duplicate call ids within that response, malformed calls, or unsupported methods is a bounded provider error. No parent workspace method is invoked for that response.
 - Visible provider text may accompany zero or more valid tool calls and remains bounded by the existing response-text limit.
@@ -42,7 +42,7 @@ This spec supersedes the "at most one tool call" clauses in `specs/trusted-jsonl
 
 - Existing parent event traces remain the source of truth for accepted, rejected, and failed workspace actions. No provider response body, credential, workspace path, hidden cause, verifier object, or private reasoning is added to artifacts or diagnostics.
 - Public release and report formats remain unchanged. Sequential actions from a multi-call provider response must remain visible through the existing action and annotation fields.
-- Existing JSONL, provider request, response, conversation, and parent workspace bounds remain enforced. The four-call response limit is independent of those bounds.
+- Existing JSONL, provider request, response, conversation, and parent workspace bounds remain enforced. The eight-call response limit is independent of those bounds.
 
 ## Edge Cases & Error Handling
 
@@ -55,7 +55,7 @@ This spec supersedes the "at most one tool call" clauses in `specs/trusted-jsonl
 
 ## Implementation Plan
 
-1. Add a shared bounded call-list validator and the named `MAX_PROVIDER_TOOL_CALLS_PER_RESPONSE = 4` constant.
+1. Add a shared bounded call-list validator and the named `MAX_PROVIDER_TOOL_CALLS_PER_RESPONSE = 8` constant.
 2. Update OpenAI-compatible and Responses response parsers to accept ordered supported call lists and reject duplicate or oversized lists.
 3. Update the worker loop to dispatch a validated multi-call response through the existing `call`/`result` JSONL messages and append the complete continuation conversation.
 4. Update Responses conversation translation for multiple assistant function calls and function-call outputs.

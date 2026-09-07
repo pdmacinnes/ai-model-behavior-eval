@@ -22,7 +22,7 @@ from .execution_policy import (
 SUPPORTED_TOOL_METHODS = frozenset(
     {"request_evidence", "edit_file", "record_checkpoint", "stop_investigation"}
 )
-MAX_PROVIDER_TOOL_CALLS_PER_RESPONSE = 4
+MAX_PROVIDER_TOOL_CALLS_PER_RESPONSE = 8
 BEHAVIOR_STATUSES = frozenset({"completed", "refused", "insufficient_evidence", "stopped"})
 PROVIDER_WORKER_VERSION = "evidence-jsonl-provider-worker-v1"
 DEFAULT_MAX_REQUEST_BYTES = 256_000
