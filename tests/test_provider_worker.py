@@ -261,7 +261,7 @@ class ProviderWorkerTests(unittest.TestCase):
                     "function": {
                         "name": "request_evidence",
                         "description": "Inspect evidence",
-                        "parameters": {"type": "object", "properties": {}},
+                        "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
                     },
                 }
             ],
@@ -270,6 +270,10 @@ class ProviderWorkerTests(unittest.TestCase):
         )
         self.assertEqual(request["contents"][0]["parts"][0]["text"], "investigate")
         self.assertEqual(request["tools"][0]["functionDeclarations"][0]["name"], "request_evidence")
+        declaration = request["tools"][0]["functionDeclarations"][0]
+        self.assertIn("parametersJsonSchema", declaration)
+        self.assertNotIn("parameters", declaration)
+        self.assertFalse(declaration["parametersJsonSchema"]["additionalProperties"])
         self.assertNotIn("generationConfig", request)
         self.assertNotIn("api_key", json.dumps(request))
 

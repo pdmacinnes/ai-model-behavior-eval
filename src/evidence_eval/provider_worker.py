@@ -440,7 +440,7 @@ def _gemini_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
             {
                 "name": name,
                 "description": description,
-                "parameters": json.loads(json.dumps(parameters, ensure_ascii=False)),
+                "parametersJsonSchema": json.loads(json.dumps(parameters, ensure_ascii=False)),
             }
         )
     if not declarations:
