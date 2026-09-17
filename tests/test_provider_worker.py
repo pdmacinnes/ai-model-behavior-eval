@@ -32,6 +32,7 @@ from evidence_eval.provider_worker import (
     parse_openai_compatible_response,
     parse_openai_responses_response,
     run_provider_worker,
+    _write_json_line,
 )
 from evidence_eval.runner import ModelCondition
 from evidence_eval.schema import load_case_family
@@ -43,6 +44,12 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ProviderWorkerTests(unittest.TestCase):
+    def test_jsonl_writer_escapes_unicode_for_legacy_windows_streams(self):
+        stream = io.StringIO()
+        _write_json_line(stream, {"text": "inspect → edit"}, 1000)
+        self.assertEqual(json.loads(stream.getvalue())["text"], "inspect → edit")
+        self.assertNotIn("→", stream.getvalue())
+
     def _task(self) -> dict[str, object]:
         family = load_case_family(ROOT / "behavior_cases" / "dashboard-filter-refresh" / "family.json")
         return {

@@ -14,6 +14,10 @@ def analyze_trace(record: dict[str, Any]) -> dict[str, Any]:
     stop_event = next((event for event in reversed(events) if event.get("kind") == "stop"), None)
     edit_count = sum(event.get("action") == "edit" for event in accepted)
     revealed = sorted({item for event in accepted for item in event.get("reveals", [])})
+    budget_depleted = record.get("remaining_cost") == 0
+    action_rejected_for_insufficient_budget = any(
+        event.get("error") == "evidence budget exceeded" for event in rejected
+    )
     return {
         "family_id": record.get("family_id"),
         "variant_id": record.get("variant_id"),
@@ -31,8 +35,9 @@ def analyze_trace(record: dict[str, Any]) -> dict[str, Any]:
         "repair_attempted": edit_count > 0,
         "edit_count": edit_count,
         "termination_reason": stop_event.get("reason") if stop_event else None,
-        "budget_exhausted": record.get("remaining_cost") == 0
-        or any(event.get("error") == "evidence budget exceeded" for event in rejected),
+        "budget_depleted": budget_depleted,
+        "action_rejected_for_insufficient_budget": action_rejected_for_insufficient_budget,
+        "budget_exhausted": budget_depleted or action_rejected_for_insufficient_budget,
         "checkpoint_count": len(checkpoints),
         "leading_hypotheses": [event.get("leading_hypothesis") for event in checkpoints],
         "confidence_sequence": [event.get("confidence") for event in checkpoints],

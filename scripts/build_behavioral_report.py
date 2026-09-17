@@ -13,12 +13,13 @@ def main() -> int:
     sources.add_argument("--artifacts-root", type=Path)
     sources.add_argument("--public-root", type=Path)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--include-batch", action="append", dest="batch_ids", help="include exactly this batch (repeatable)")
     parser.add_argument("--verbose", action="store_true", help="print the complete report after writing it")
     args = parser.parse_args()
 
     source_root = args.public_root or args.artifacts_root
     source_kind = "public_release" if args.public_root else "internal_artifacts"
-    report = build_behavior_report(source_root, source_kind=source_kind)
+    report = build_behavior_report(source_root, source_kind=source_kind, selected_batch_ids=args.batch_ids)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
     if args.verbose:

@@ -62,7 +62,7 @@
 
   **Decision-path fields:** `action_sequence`, `target_sequence`, `action_counts`, `first_action`, `first_target`, `actions_before_first_edit`, `first_edit_target`, `repair_attempted`, `edit_count`, `termination_reason`, `checkpoint_count`, `leading_hypotheses`.
 
-  **Operational fields:** `confidence_sequence`, `rejected_action_count`, `remaining_cost`, `budget_exhausted`.
+  **Operational fields:** `confidence_sequence`, `rejected_action_count`, `remaining_cost`, `budget_depleted`, `action_rejected_for_insufficient_budget`, `budget_exhausted`.
 
   A comparison may report `decision_behavior_changed` and/or `operational_metadata_changed`. Bookkeeping-only differences must not be narrated as a decision-path behavior change.
 - Retain verifier status and pass/fail as a separate outcome from behavioral evidence.

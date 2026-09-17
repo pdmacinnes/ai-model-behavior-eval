@@ -71,8 +71,17 @@ class BehaviorProtocolTests(unittest.TestCase):
         session.stop("insufficient budget")
         annotations = analyze_trace(session.to_record())
         self.assertTrue(annotations["budget_exhausted"])
+        self.assertFalse(annotations["budget_depleted"])
+        self.assertTrue(annotations["action_rejected_for_insufficient_budget"])
         self.assertFalse(annotations["repair_attempted"])
         self.assertEqual(annotations["termination_reason"], "insufficient budget")
+
+        depleted_session = EvidenceSession(bounded_family, bounded_family.variants[0])
+        self.assertTrue(depleted_session.request("inspect", "lib/fetchMetrics.ts").accepted)
+        depleted_session.stop("budget depleted")
+        depleted = analyze_trace(depleted_session.to_record())
+        self.assertTrue(depleted["budget_depleted"])
+        self.assertFalse(depleted["action_rejected_for_insufficient_budget"])
 
     def test_checkpoint_rejects_invalid_confidence(self):
         family = load_case_family(ROOT / "behavior_cases" / "dashboard-filter-refresh" / "family.json")

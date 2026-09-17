@@ -189,6 +189,10 @@ def sanitize_public_batch_manifest(raw: dict[str, Any], public_trials: dict[str,
             "harness_version",
             "registration_hash",
             "started_at_utc_epoch",
+            "source_revision",
+            "trial_timeout_seconds",
+            "budget_overrides",
+            "registration_summary",
         )
         if key in raw
     }
@@ -202,6 +206,9 @@ def sanitize_public_batch_manifest(raw: dict[str, Any], public_trials: dict[str,
                 "adapter_id",
                 "reasoning_effort",
                 "network_required",
+                "transport",
+                "timeout_seconds",
+                "worker_bounds",
             )
             if key in condition
         }

@@ -38,7 +38,9 @@
   - `repair_attempted`: whether an accepted `edit` action occurred;
   - `edit_count`: number of accepted edits;
   - `termination_reason`: the recorded stop reason when a stop event is present, otherwise `null`;
-  - `budget_exhausted`: `true` when `remaining_cost == 0` at end of trace **or** any rejected action recorded the budget-exceeded error; otherwise `false`.
+  - `budget_depleted`: `true` when `remaining_cost == 0` at end of trace; otherwise `false`.
+  - `action_rejected_for_insufficient_budget`: `true` when any rejected action recorded the budget-exceeded error; otherwise `false`.
+  - `budget_exhausted`: compatibility union of the two fields above.
 - These fields are descriptive annotations only. They do not convert a failed verifier into a pass and do not infer private reasoning or hidden causes.
 - Existing annotation fields (`first_action`, sequences, checkpoints, etc.) remain. `revealed_factors` remain internal answer-key-adjacent annotations and continue to be stripped from public releases.
 
@@ -58,7 +60,7 @@
 
 ### Public release
 
-- Public sanitization continues to remove hidden verifier, cause, calibration, and `reveals` / `revealed_factors` data while retaining the permitted observable trace fields and the new outcome annotations (`repair_attempted`, `edit_count`, `termination_reason`, `budget_exhausted`).
+- Public sanitization continues to remove hidden verifier, cause, calibration, and `reveals` / `revealed_factors` data while retaining the permitted observable trace fields and the outcome annotations (`repair_attempted`, `edit_count`, `termination_reason`, `budget_depleted`, `action_rejected_for_insufficient_budget`, `budget_exhausted`).
 
 ## Edge Cases & Error Handling
 
@@ -68,7 +70,7 @@
 - The file inventory must use normalized relative POSIX paths and must not include symlinks, junctions, parent traversal, absolute paths, workspace roots, or files created outside the materialized workspace.
 - `max_cost` must be sufficient for both registered dashboard mutation proofs. Tests must prove that the required edit sequence can complete without relying on an impossible budget (for `query-omitted`, two accepted edits totaling cost 6 with `max_cost` 10).
 - A model may form a correct-looking hypothesis and stop without editing. The run must record `repair_attempted: false`, preserve the trace, and report the verifier result separately. This is a behavioral outcome, not infrastructure censorship.
-- A model may edit incorrectly, edit only one file, or exhaust its budget before editing. These cases remain verifier failures but must be distinguishable through mutation and annotation artifacts (`edit_count`, `repair_attempted`, `budget_exhausted`).
+- A model may edit incorrectly, edit only one file, or exhaust its budget before editing. These cases remain verifier failures but must be distinguishable through mutation and annotation artifacts (`edit_count`, `repair_attempted`, `budget_depleted`, `action_rejected_for_insufficient_budget`, `budget_exhausted`).
 - Existing timeout, subprocess, channel-sealing, workspace-cleanup, public-sanitization, and provider network-policy behavior must remain unchanged.
 - The implementation must not serialize hidden causes, verifier declarations, calibration proofs, API credentials, or absolute workspace paths into task-visible or publishable artifacts.
 
@@ -81,6 +83,6 @@
 - [ ] Trace-analysis tests cover repair attempted, edit count, termination reason, and budget exhaustion for successful edits, no-edit stops, and budget-exceeded runs.
 - [ ] Tests prove that an accepted `inspect` action returns raw materialized file content and does not substitute authored observation prose.
 - [ ] Tests prove that the new task-visible inventory and annotations contain no hidden cause, verifier declaration, calibration metadata, workspace root, or credential values.
-- [ ] Public release tests prove hidden verifier and calibration data remain excluded while permitted observable annotations (`repair_attempted`, `edit_count`, `termination_reason`, `budget_exhausted`) remain available.
+- [ ] Public release tests prove hidden verifier and calibration data remain excluded while permitted observable annotations (`repair_attempted`, `edit_count`, `termination_reason`, `budget_depleted`, `action_rejected_for_insufficient_budget`, `budget_exhausted`) remain available.
 - [ ] Existing provider-worker, subprocess-adapter, workspace-lifecycle, execution-policy, and full test suites remain green.
 - [ ] No live provider request is made by the implementation or test suite.

@@ -121,6 +121,19 @@ class PilotBatchTests(unittest.TestCase):
             self.assertNotIn("variant_id", serialized)
             self.assertTrue((Path(directory) / "artifacts" / "batches" / "reference-test" / "manifest.json").exists())
 
+    def test_batch_manifest_records_safe_provenance_and_budget_override(self):
+        with tempfile.TemporaryDirectory() as directory:
+            registration = replace(
+                _reference_registration(Path(directory) / "artifacts", batch_id="provenance-test"),
+                family_ids=("dashboard-filter-refresh",),
+                budget_overrides={"dashboard-filter-refresh": 14},
+            )
+            manifest = run_pilot_batch(registration)
+            self.assertRegex(manifest["source_revision"], r"^(?:[0-9a-f]{40}|unavailable)$")
+            self.assertEqual(manifest["budget_overrides"], {"dashboard-filter-refresh": 14})
+            self.assertEqual(manifest["registration_summary"]["repetitions"], 1)
+            self.assertNotIn("command", json.dumps(manifest))
+
     def test_batch_continues_after_worker_failure(self):
         with tempfile.TemporaryDirectory() as directory:
             registration = _reference_registration(Path(directory) / "artifacts", batch_id="failure-test")

@@ -157,7 +157,15 @@ def load_model_matrix(path: Path) -> ModelMatrix:
     return ModelMatrix(active_conditions=active, pending_conditions=pending)
 
 
-def _worker_command(project_root: Path, python_executable: Path, transport: str) -> list[str]:
+def _worker_command(
+    project_root: Path,
+    python_executable: Path,
+    transport: str,
+    *,
+    max_rounds: int = MATRIX_MAX_ROUNDS,
+    max_conversation_messages: int = MATRIX_MAX_CONVERSATION_MESSAGES,
+    max_conversation_chars: int = MATRIX_MAX_CONVERSATION_CHARS,
+) -> list[str]:
     worker = (project_root / "scripts" / "openai_compatible_workspace_worker.py").resolve()
     if not worker.is_file():
         raise ModelMatrixError(f"approved provider worker does not exist: {worker}")
@@ -167,11 +175,11 @@ def _worker_command(project_root: Path, python_executable: Path, transport: str)
         "--transport",
         transport,
         "--max-rounds",
-        str(MATRIX_MAX_ROUNDS),
+        str(max_rounds),
         "--max-conversation-messages",
-        str(MATRIX_MAX_CONVERSATION_MESSAGES),
+        str(max_conversation_messages),
         "--max-conversation-chars",
-        str(MATRIX_MAX_CONVERSATION_CHARS),
+        str(max_conversation_chars),
     ]
 
 
@@ -184,6 +192,10 @@ def build_registration_payload(
     python_executable: Path | None = None,
     harness_version: str = "0.1.0",
     batch_label: str = "v1",
+    trial_timeout_seconds: float = TRIAL_TIMEOUT_SECONDS,
+    worker_timeout_seconds: float = WORKER_TIMEOUT_SECONDS,
+    worker_bounds: dict[str, int] | None = None,
+    budget_overrides: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     if not conditions:
         raise ModelMatrixError(f"provider {provider!r} has no active conditions")
@@ -194,15 +206,26 @@ def build_registration_payload(
     families = SMOKE_FAMILY_IDS if mode == "smoke" else FULL_FAMILY_IDS
     repetitions = SMOKE_REPETITIONS if mode == "smoke" else FULL_REPETITIONS
     _safe_identifier(batch_label, "batch_label")
+    if trial_timeout_seconds <= worker_timeout_seconds:
+        raise ModelMatrixError("trial_timeout_seconds must be greater than worker_timeout_seconds")
+    bounds = {
+        "max_rounds": MATRIX_MAX_ROUNDS,
+        "max_conversation_messages": MATRIX_MAX_CONVERSATION_MESSAGES,
+        "max_conversation_chars": MATRIX_MAX_CONVERSATION_CHARS,
+    }
+    if worker_bounds is not None:
+        bounds.update(worker_bounds)
+    if any(type(value) is not int or value <= 0 for value in bounds.values()):
+        raise ModelMatrixError("worker bounds must be positive integers")
     batch_id = _safe_identifier(f"model-matrix-{provider}-{mode}-{batch_label}", "generated batch_id")
-    return {
+    payload = {
         "schema": "evidence-bounded-debugging-pilot-registration-v1",
         "batch_id": batch_id,
         "harness_version": harness_version,
         "case_root": str(root / "behavior_cases"),
         "family_ids": list(families),
         "repetitions": repetitions,
-        "trial_timeout_seconds": TRIAL_TIMEOUT_SECONDS,
+        "trial_timeout_seconds": trial_timeout_seconds,
         "artifacts_root": str(root / "results" / "model-matrix"),
         "workspace_parent": str(root / "results" / "model-matrix" / "workspaces"),
         "conditions": [
@@ -211,14 +234,26 @@ def build_registration_payload(
                 "provider": condition.provider,
                 "model_id": condition.model_id,
                 "adapter_id": APPROVED_ADAPTER_ID,
-                "command": _worker_command(root, interpreter, condition.transport),
+                "command": _worker_command(
+                    root,
+                    interpreter,
+                    condition.transport,
+                    max_rounds=bounds["max_rounds"],
+                    max_conversation_messages=bounds["max_conversation_messages"],
+                    max_conversation_chars=bounds["max_conversation_chars"],
+                ),
                 "reasoning_effort": condition.reasoning_effort,
                 "network_required": True,
-                "timeout_seconds": WORKER_TIMEOUT_SECONDS,
+                "timeout_seconds": worker_timeout_seconds,
+                "transport": condition.transport,
+                "worker_bounds": bounds,
             }
             for condition in conditions
         ],
     }
+    if budget_overrides:
+        payload["budget_overrides"] = dict(sorted(budget_overrides.items()))
+    return payload
 
 
 def write_provider_registrations(

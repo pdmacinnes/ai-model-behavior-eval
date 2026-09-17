@@ -1057,7 +1057,9 @@ def _read_json_line(stream: TextIO, max_chars: int) -> dict[str, Any]:
 
 
 def _write_json_line(stream: TextIO, value: dict[str, Any], max_chars: int) -> None:
-    encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    # JSONL is a machine-to-machine protocol. ASCII escaping keeps the wire
+    # format safe even when a Windows child process inherits a legacy code page.
+    encoded = json.dumps(value, ensure_ascii=True, separators=(",", ":"))
     if len(encoded) > max_chars:
         raise ProviderWorkerError("worker JSONL message exceeded the bound")
     stream.write(encoded + "\n")

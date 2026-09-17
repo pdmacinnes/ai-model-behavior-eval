@@ -19,7 +19,7 @@ Pattern names are structural and finite:
 - `evidence_first_list_files`, `evidence_first_inspect`, `evidence_first_search`, or `evidence_first_trace`;
 - `hypothesis_checkpoint_recorded`;
 - `repair_attempted` or `no_repair_edit`;
-- `budget_exhausted`;
+- `budget_depleted`, `action_rejected_for_insufficient_budget`, and compatibility `budget_exhausted`;
 - `rejected_action_recorded`.
 
 Patterns are derived only from the report’s allowlisted run fields. A censored run receives only the censorship pattern and is not classified as a behavioral no-action pattern. A run may contribute to multiple patterns. Counts are supporting context, not scores.

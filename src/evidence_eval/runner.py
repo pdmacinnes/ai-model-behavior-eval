@@ -36,9 +36,15 @@ class ModelCondition:
     prompt: str
     reasoning_effort: str | None = None
     harness_version: str = "0.1.0"
+    transport: str | None = None
+    worker_timeout_seconds: float | None = None
+    trial_timeout_seconds: float | None = None
+    source_revision: str | None = None
+    registration_hash: str | None = None
+    worker_bounds: dict[str, int] | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        value = {
             "provider": self.provider,
             "model_id": self.model_id,
             "adapter_id": self.adapter_id,
@@ -46,6 +52,18 @@ class ModelCondition:
             "reasoning_effort": self.reasoning_effort,
             "harness_version": self.harness_version,
         }
+        for key in (
+            "transport",
+            "worker_timeout_seconds",
+            "trial_timeout_seconds",
+            "source_revision",
+            "registration_hash",
+            "worker_bounds",
+        ):
+            item = getattr(self, key)
+            if item is not None:
+                value[key] = dict(item) if key == "worker_bounds" else item
+        return value
 
 
 @dataclass(frozen=True)

@@ -23,7 +23,7 @@ MATRIX_PATH = ROOT / "configs" / "model_matrix.json"
 class ModelMatrixTests(unittest.TestCase):
     def test_catalog_contains_active_models(self):
         matrix = load_model_matrix(MATRIX_PATH)
-        self.assertEqual(len(matrix.active_conditions), 12)
+        self.assertEqual(len(matrix.active_conditions), 9)
         self.assertEqual(
             {condition.model_id for condition in matrix.active_conditions},
             {
@@ -35,16 +35,16 @@ class ModelMatrixTests(unittest.TestCase):
                 "claude-sonnet-5",
                 "gemini-3.8-flash",
                 "grok-4.6",
-                "deepseek-v4-pro",
-                "qwen3.8-max-0902",
-                "kimi-k2.6",
                 "muse-spark-1.3",
             },
         )
-        self.assertEqual(matrix.pending_conditions, ())
+        self.assertEqual(
+            {condition.condition_id for condition in matrix.pending_conditions},
+            {"deepseek-v4-pro", "alibaba-qwen-3-8-max-0902", "moonshot-kimi-k2-6"},
+        )
         self.assertEqual(
             matrix.providers,
-            ("alibaba", "anthropic", "deepseek", "google", "meta", "moonshot", "openai", "xai"),
+            ("anthropic", "google", "meta", "openai", "xai"),
         )
         google = matrix.conditions_for_provider("google")
         self.assertEqual(len(google), 1)
@@ -92,8 +92,8 @@ class ModelMatrixTests(unittest.TestCase):
                 self.assertNotIn("verifier", serialized.lower())
             smoke_trials += len(conditions) * 2 * smoke["repetitions"]
             full_trials += len(conditions) * 6 * full["repetitions"]
-        self.assertEqual(smoke_trials, 24)
-        self.assertEqual(full_trials, 144)
+        self.assertEqual(smoke_trials, 18)
+        self.assertEqual(full_trials, 108)
 
     def test_batch_label_creates_distinguishable_rerun(self):
         matrix = load_model_matrix(MATRIX_PATH)
@@ -122,7 +122,7 @@ class ModelMatrixTests(unittest.TestCase):
                 Path(directory),
                 project_root=ROOT,
             )
-            self.assertEqual(len(paths), 16)
+            self.assertEqual(len(paths), 10)
             for path in paths:
                 registration = load_pilot_registration(path)
                 self.assertTrue(registration.conditions)

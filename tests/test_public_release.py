@@ -113,14 +113,29 @@ class PublicReleaseTests(unittest.TestCase):
                 encoding="utf-8",
             )
             (artifacts / "final_response.txt").write_text("provider output with sk-test-secret", encoding="utf-8")
+            batch_two = root / "artifacts" / "batches" / "batch-2"
+            batch_two.mkdir(parents=True)
+            (batch_two / "manifest.json").write_text(
+                json.dumps(
+                    {
+                        "schema": "evidence-bounded-debugging-batch-v1",
+                        "batch_id": "batch-2",
+                        "conditions": [],
+                        "planned_trials": [],
+                        "results": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
 
             output = root / "public"
-            manifest = builder.build(ROOT / "behavior_cases", output, root / "artifacts")
+            manifest = builder.build(ROOT / "behavior_cases", output, root / "artifacts", batch_ids=["batch-1"])
 
             self.assertEqual(manifest["run_count"], 1)
             self.assertEqual(manifest["batch_count"], 1)
             self.assertIn("adapter_result.json", manifest["excluded_artifacts"])
             self.assertEqual(manifest["registration_count"], 1)
+            self.assertEqual(manifest["selected_batch_ids"], ["batch-1"])
             self.assertIn("report_builder", manifest["entrypoints"])
             public_run_dir = next((output / "runs").iterdir())
             self.assertRegex(public_run_dir.name, r"^pub-[0-9a-f]{24}$")

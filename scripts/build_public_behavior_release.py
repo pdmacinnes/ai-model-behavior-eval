@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 from evidence_eval.public import (
     PUBLIC_EXCLUDED_ARTIFACTS,
@@ -33,6 +33,9 @@ def _public_registration_projection(manifest: dict[str, Any], batch_id: str) -> 
                     "adapter_id",
                     "reasoning_effort",
                     "network_required",
+                    "transport",
+                    "timeout_seconds",
+                    "worker_bounds",
                 )
                 if key in condition
             }
@@ -46,6 +49,9 @@ def _public_registration_projection(manifest: dict[str, Any], batch_id: str) -> 
         "registration_hash": manifest.get("registration_hash"),
         "case_set_hash": manifest.get("case_set_hash"),
         "harness_version": manifest.get("harness_version"),
+        "source_revision": manifest.get("source_revision"),
+        "trial_timeout_seconds": manifest.get("trial_timeout_seconds"),
+        "budget_overrides": manifest.get("budget_overrides", {}),
         "family_ids": family_ids,
         "repetitions": repetitions,
         "planned_trial_count": len(planned_trials) if isinstance(planned_trials, list) else 0,
@@ -62,7 +68,15 @@ def _read_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def build(cases_root: Path, output_root: Path, artifacts_root: Path | None = None) -> dict[str, Any]:
+def build(
+    cases_root: Path,
+    output_root: Path,
+    artifacts_root: Path | None = None,
+    *,
+    batch_ids: Iterable[str] | None = None,
+    release_kind: str | None = None,
+) -> dict[str, Any]:
+    selected_batch_ids = None if batch_ids is None else list(batch_ids)
     case_output = output_root / "cases"
     case_output.mkdir(parents=True, exist_ok=True)
     case_count = 0
@@ -77,9 +91,23 @@ def build(cases_root: Path, output_root: Path, artifacts_root: Path | None = Non
     batch_count = 0
     registration_count = 0
     if artifacts_root is not None and artifacts_root.exists():
-        batch_sources = sorted(path for path in (artifacts_root / "batches").glob("*") if path.is_dir())
+        available_batches = {
+            path.name: path for path in (artifacts_root / "batches").glob("*") if path.is_dir()
+        }
+        if selected_batch_ids is not None:
+            if len(set(selected_batch_ids)) != len(selected_batch_ids):
+                raise ValueError("batch selection contains duplicates")
+            missing = sorted(set(selected_batch_ids) - set(available_batches))
+            if missing:
+                raise ValueError(f"requested batch does not exist: {', '.join(missing)}")
+            batch_sources = [available_batches[batch_id] for batch_id in selected_batch_ids]
+        else:
+            batch_sources = sorted(available_batches.values())
         trial_mappings: dict[str, dict[str, Any]] = {}
         manifest_values: dict[Path, dict[str, Any]] = {}
+        selected_case_hashes: set[str] = set()
+        planned_internal_ids: set[str] = set()
+        manifest_batch_ids: set[str] = set()
         for batch_dir in batch_sources:
             source = batch_dir / "manifest.json"
             if not source.is_file():
@@ -90,6 +118,12 @@ def build(cases_root: Path, output_root: Path, artifacts_root: Path | None = Non
             batch_id = raw_manifest.get("batch_id", batch_dir.name)
             if not isinstance(batch_id, str):
                 raise ValueError(f"batch manifest has an invalid batch id: {source}")
+            if batch_id in manifest_batch_ids:
+                raise ValueError(f"duplicate batch id across selected manifests: {batch_id}")
+            manifest_batch_ids.add(batch_id)
+            case_set_hash = raw_manifest.get("case_set_hash")
+            if isinstance(case_set_hash, str):
+                selected_case_hashes.add(case_set_hash)
             for trial in raw_manifest.get("planned_trials", []):
                 if not isinstance(trial, dict) or not isinstance(trial.get("run_id"), str):
                     raise ValueError(f"batch has an invalid planned trial: {source}")
@@ -107,7 +141,22 @@ def build(cases_root: Path, output_root: Path, artifacts_root: Path | None = Non
                     "batch_id": batch_id,
                     "repetition": repetition,
                 }
+                planned_internal_ids.add(internal_id)
             manifest_values[batch_dir] = raw_manifest
+
+        if len(selected_case_hashes) > 1:
+            raise ValueError("selected batches use mixed case-set hashes")
+        raw_run_ids = set()
+        for run_dir in (artifacts_root / "runs").glob("*"):
+            raw_run_path = run_dir / "run.json"
+            if not raw_run_path.is_file():
+                continue
+            raw_run = _read_json(raw_run_path)
+            if isinstance(raw_run, dict) and isinstance(raw_run.get("run_id"), str):
+                raw_run_ids.add(raw_run["run_id"])
+        missing_runs = sorted(planned_internal_ids - raw_run_ids)
+        if missing_runs:
+            raise ValueError(f"selected batch has planned trials without run artifacts: {', '.join(missing_runs)}")
 
         for batch_dir in batch_sources:
             raw_manifest = manifest_values.get(batch_dir)
@@ -133,6 +182,8 @@ def build(cases_root: Path, output_root: Path, artifacts_root: Path | None = Non
             internal_run_id = raw_run["run_id"]
             info = trial_mappings.get(internal_run_id)
             if info is None:
+                if selected_batch_ids is not None:
+                    continue
                 raise ValueError(f"run is not registered in a batch manifest: {internal_run_id}")
             destination_run = output_root / "runs" / info["public_run_id"]
             for source in sorted(run_dir.glob("*.json")):
@@ -156,6 +207,8 @@ def build(cases_root: Path, output_root: Path, artifacts_root: Path | None = Non
         "run_count": run_count,
         "batch_count": batch_count,
         "registration_count": registration_count,
+        "release_kind": release_kind or ("curated" if batch_ids is not None else "archival_all"),
+        "selected_batch_ids": selected_batch_ids,
         "excluded_artifacts": list(PUBLIC_EXCLUDED_ARTIFACTS),
         "answer_key_fields_removed": [
             "hidden_cause",
@@ -203,8 +256,16 @@ def main() -> int:
     parser.add_argument("--cases-root", type=Path, required=True)
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--artifacts-root", type=Path)
+    parser.add_argument("--include-batch", action="append", dest="batch_ids", help="include exactly this batch (repeatable)")
+    parser.add_argument("--release-kind")
     args = parser.parse_args()
-    manifest = build(args.cases_root.resolve(), args.output_root.resolve(), args.artifacts_root.resolve() if args.artifacts_root else None)
+    manifest = build(
+        args.cases_root.resolve(),
+        args.output_root.resolve(),
+        args.artifacts_root.resolve() if args.artifacts_root else None,
+        batch_ids=args.batch_ids,
+        release_kind=args.release_kind,
+    )
     print(json.dumps(manifest, indent=2, sort_keys=True))
     return 0
 

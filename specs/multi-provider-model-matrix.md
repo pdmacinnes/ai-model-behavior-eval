@@ -3,15 +3,13 @@
 ## Requirements & Goals
 
 - Describe the active model conditions for the behavior study in one provider-neutral catalog.
-- Cover the 11 currently selected models:
+- Cover the 9 currently active models:
   - OpenAI GPT-6 Astra, GPT-5.6 Sol, and GPT-5.6 Luna.
   - Anthropic Claude Fable 5.1, Claude Opus 5, and Claude Sonnet 5.
   - Google Gemini 3.8 Flash.
   - xAI Grok 4.6.
-  - DeepSeek V4 Pro.
-  - Alibaba Qwen 3.8 Max 0902.
-  - Moonshot Kimi K2.6.
-- Keep Meta Muse Spark 1.3 visible as a pending condition until an API account and exact model identifier are available.
+  - Meta Muse Spark 1.3.
+- Keep DeepSeek V4 Pro, Alibaba Qwen 3.8 Max 0902, and Moonshot Kimi K2.6 visible as pending conditions until the Anthropic and Meta audits are complete.
 - Generate provider-specific pilot registrations because the current worker uses one endpoint and credential environment per process.
 - Preserve the existing parent-owned verification, timeout, censorship, and public-release boundaries.
 - Make the normal execution path unattended after the operator sets the provider environment variables and explicitly authorizes a live batch.
@@ -48,13 +46,15 @@ Each generated condition uses the reviewed `jsonl-provider-worker` command, the 
 
 Provider batches are intentionally separate. The operator selects the matching provider endpoint and credential in the environment before running that provider's registration with `--allow-network`.
 
+Native Gemini transport and OpenAI-compatible Gemini transport are distinct preregistered conditions. Results from one transport must not be pooled with the other unless that comparison is explicitly registered.
+
 ### Trial counts
 
-The 11 active conditions produce:
+The 9 active conditions produce:
 
-- 22 smoke trials total: 11 conditions x 1 family x 2 variants x 1 repetition;
-- 132 full trials total: 11 conditions x 3 families x 2 variants x 2 repetitions;
-- 154 trials across both phases.
+- 18 smoke trials total: 9 conditions x 1 family x 2 variants x 1 repetition;
+- 108 full trials total: 9 conditions x 3 families x 2 variants x 2 repetitions;
+- 126 trials across both phases.
 
 These are bookkeeping counts only. The project does not add a composite score, leaderboard, or model ranking.
 
@@ -73,7 +73,7 @@ These are bookkeeping counts only. The project does not add a composite score, l
 
 ## Acceptance Criteria
 
-- [ ] The committed catalog contains the 11 active conditions and a pending Meta condition.
+- [ ] The committed catalog contains the 9 active conditions and three pending Chinese-provider conditions.
 - [ ] The catalog parser rejects unknown fields, duplicate IDs, placeholders, credentials, paths, and endpoint configuration.
 - [ ] Generation groups conditions by provider and creates smoke and full registrations for every active provider.
 - [ ] Smoke registrations select one family, both variants, and one repetition.
@@ -82,6 +82,6 @@ These are bookkeeping counts only. The project does not add a composite score, l
 - [ ] Generated registrations contain no credential values, endpoint values, hidden annotations, or verifier declarations.
 - [ ] Generated registrations load successfully through the existing pilot parser.
 - [ ] Generation refuses to overwrite existing files.
-- [ ] Tests verify the model list, pending Meta behavior, provider grouping, trial counts, validation, and overwrite protection.
+- [ ] Tests verify the model list, pending Chinese-provider behavior, provider grouping, trial counts, validation, and overwrite protection.
 - [ ] The full existing test suite and offline generation checks pass.
 - [ ] No live provider call occurs during implementation or verification.

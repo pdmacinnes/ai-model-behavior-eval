@@ -4,8 +4,9 @@ import hashlib
 import json
 import math
 import re
+import subprocess
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +37,23 @@ class PilotRegistrationError(ValueError):
 def _canonical_hash(value: Any) -> str:
     payload = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
+
+
+def _source_revision(project_root: Path) -> str:
+    """Return a non-sensitive source revision suitable for provenance fields."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=project_root,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "unavailable"
+    revision = result.stdout.strip()
+    return revision if re.fullmatch(r"[0-9a-f]{40}", revision) else "unavailable"
 
 
 def _safe_identifier(value: Any, label: str) -> str:
@@ -84,9 +102,11 @@ class PilotCondition:
     reasoning_effort: str | None
     network_required: bool
     timeout_seconds: float
+    transport: str | None = None
+    worker_bounds: dict[str, int] | None = None
 
     def to_payload(self) -> dict[str, Any]:
-        return {
+        value = {
             "condition_id": self.condition_id,
             "provider": self.provider,
             "model_id": self.model_id,
@@ -96,18 +116,36 @@ class PilotCondition:
             "network_required": self.network_required,
             "timeout_seconds": self.timeout_seconds,
         }
+        if self.transport is not None:
+            value["transport"] = self.transport
+        if self.worker_bounds is not None:
+            value["worker_bounds"] = dict(self.worker_bounds)
+        return value
 
     def to_public_dict(self) -> dict[str, Any]:
-        return {
+        value = {
             "condition_id": self.condition_id,
             "provider": self.provider,
             "model_id": self.model_id,
             "adapter_id": self.adapter_id,
             "reasoning_effort": self.reasoning_effort,
             "network_required": self.network_required,
+            "transport": self.transport,
+            "timeout_seconds": self.timeout_seconds,
         }
+        if self.worker_bounds is not None:
+            value["worker_bounds"] = dict(self.worker_bounds)
+        return value
 
-    def model_condition(self, family: CaseFamily, harness_version: str) -> ModelCondition:
+    def model_condition(
+        self,
+        family: CaseFamily,
+        harness_version: str,
+        *,
+        trial_timeout_seconds: float,
+        source_revision: str,
+        registration_hash: str,
+    ) -> ModelCondition:
         return ModelCondition(
             provider=self.provider,
             model_id=self.model_id,
@@ -115,6 +153,12 @@ class PilotCondition:
             prompt=family.initial_context["prompt"],
             reasoning_effort=self.reasoning_effort,
             harness_version=harness_version,
+            transport=self.transport,
+            worker_timeout_seconds=self.timeout_seconds,
+            trial_timeout_seconds=trial_timeout_seconds,
+            source_revision=source_revision,
+            registration_hash=registration_hash,
+            worker_bounds=self.worker_bounds,
         )
 
 
@@ -130,6 +174,7 @@ class PilotRegistration:
     artifacts_root: Path
     workspace_parent: Path
     conditions: tuple[PilotCondition, ...]
+    budget_overrides: dict[str, int] = field(default_factory=dict)
     registration_hash: str = ""
     source_path: Path | None = None
 
@@ -146,6 +191,7 @@ class PilotRegistration:
             "artifacts_root": str(self.artifacts_root),
             "workspace_parent": str(self.workspace_parent),
             "conditions": [condition.to_payload() for condition in self.conditions],
+            "budget_overrides": dict(sorted(self.budget_overrides.items())),
         }
 
     def digest(self) -> str:
@@ -168,6 +214,7 @@ class PlannedTrial:
             "provider": self.condition.provider,
             "model_id": self.condition.model_id,
             "adapter_id": self.condition.adapter_id,
+            "transport": self.condition.transport,
             "family_id": self.family_id,
             "variant_slot": self.variant_slot,
             "repetition": self.repetition,
@@ -187,6 +234,8 @@ def _parse_condition(raw: Any, index: int) -> PilotCondition:
             "reasoning_effort",
             "network_required",
             "timeout_seconds",
+            "transport",
+            "worker_bounds",
         },
         f"conditions[{index}]",
     )
@@ -211,6 +260,25 @@ def _parse_condition(raw: Any, index: int) -> PilotCondition:
         raise PilotRegistrationError(f"conditions[{index}].reasoning_effort must be a string or null")
     if type(value["network_required"]) is not bool:
         raise PilotRegistrationError(f"conditions[{index}].network_required must be a boolean")
+    transport = value.get("transport")
+    if transport is not None:
+        transport = _safe_identifier(transport, f"conditions[{index}].transport")
+    worker_bounds = value.get("worker_bounds")
+    if worker_bounds is not None:
+        worker_bounds = _require_object(worker_bounds, f"conditions[{index}].worker_bounds")
+        _reject_unknown(
+            worker_bounds,
+            {"max_rounds", "max_conversation_messages", "max_conversation_chars"},
+            f"conditions[{index}].worker_bounds",
+        )
+        if set(worker_bounds) != {"max_rounds", "max_conversation_messages", "max_conversation_chars"}:
+            raise PilotRegistrationError(f"conditions[{index}].worker_bounds must specify all worker bounds")
+        parsed_bounds: dict[str, int] = {}
+        for key, item in worker_bounds.items():
+            if type(item) is not int or item <= 0:
+                raise PilotRegistrationError(f"conditions[{index}].worker_bounds.{key} must be a positive integer")
+            parsed_bounds[key] = item
+        worker_bounds = parsed_bounds
     return PilotCondition(
         condition_id=_safe_identifier(value["condition_id"], f"conditions[{index}].condition_id"),
         provider=_non_empty_string(value["provider"], f"conditions[{index}].provider"),
@@ -220,7 +288,22 @@ def _parse_condition(raw: Any, index: int) -> PilotCondition:
         reasoning_effort=reasoning_effort,
         network_required=value["network_required"],
         timeout_seconds=_positive_number(value["timeout_seconds"], f"conditions[{index}].timeout_seconds"),
+        transport=transport,
+        worker_bounds=worker_bounds,
     )
+
+
+def _parse_budget_overrides(value: Any) -> dict[str, int]:
+    if value is None:
+        return {}
+    raw = _require_object(value, "budget_overrides")
+    parsed: dict[str, int] = {}
+    for family_id, budget in raw.items():
+        family_key = _safe_identifier(family_id, "budget_overrides family")
+        if type(budget) is not int or budget <= 0:
+            raise PilotRegistrationError(f"budget_overrides[{family_id!r}] must be a positive integer")
+        parsed[family_key] = budget
+    return parsed
 
 
 def _parse_variant_ids(value: Any) -> dict[str, tuple[str, ...]]:
@@ -259,6 +342,7 @@ def load_pilot_registration(path: Path) -> PilotRegistration:
             "artifacts_root",
             "workspace_parent",
             "conditions",
+            "budget_overrides",
         },
         "pilot registration",
     )
@@ -305,6 +389,7 @@ def load_pilot_registration(path: Path) -> PilotRegistration:
         artifacts_root=_resolve_path(value["artifacts_root"], "artifacts_root", base),
         workspace_parent=_resolve_path(value["workspace_parent"], "workspace_parent", base),
         conditions=parsed_conditions,
+        budget_overrides=_parse_budget_overrides(value.get("budget_overrides")),
         registration_hash=_canonical_hash(value),
         source_path=source_path,
     )
@@ -330,6 +415,11 @@ def _validate_registration_shape(registration: PilotRegistration) -> None:
             raise PilotRegistrationError(f"variant_ids contains unselected family: {family_id}")
         if not variant_ids or len(set(variant_ids)) != len(variant_ids):
             raise PilotRegistrationError(f"variant_ids[{family_id!r}] must contain unique values")
+    for family_id, budget in (registration.budget_overrides or {}).items():
+        if family_id not in registration.family_ids:
+            raise PilotRegistrationError(f"budget_overrides contains unselected family: {family_id}")
+        if type(budget) is not int or budget <= 0:
+            raise PilotRegistrationError(f"budget_overrides[{family_id!r}] must be a positive integer")
     for condition in registration.conditions:
         if condition.timeout_seconds >= registration.trial_timeout_seconds:
             raise PilotRegistrationError(
@@ -363,6 +453,9 @@ def _load_families(registration: PilotRegistration) -> dict[str, CaseFamily]:
             errors.append(f"{family_id}: unknown selected variants: {', '.join(missing)}")
         if not selected:
             errors.append(f"{family_id}: selected variants must not be empty")
+        override = (registration.budget_overrides or {}).get(family_id)
+        if override is not None:
+            family = replace(family, max_cost=override)
         families[family_id] = family
     if errors:
         raise PilotRegistrationError("pilot preflight failed: " + "; ".join(errors))
@@ -498,6 +591,7 @@ def run_pilot_batch(registration: PilotRegistration, *, allow_network: bool = Fa
         raise PilotRegistrationError(str(exc)) from exc
     families = _load_families(registration)
     planned = plan_pilot_trials(registration, families)
+    source_revision = _source_revision(registration.case_root.parent)
     batch_dir = registration.artifacts_root / "batches" / registration.batch_id
     if batch_dir.exists():
         raise ArtifactExistsError(str(batch_dir))
@@ -509,7 +603,13 @@ def run_pilot_batch(registration: PilotRegistration, *, allow_network: bool = Fa
     results: list[dict[str, Any]] = []
     for trial in planned:
         family = families[trial.family_id]
-        model_condition = trial.condition.model_condition(family, registration.harness_version)
+        model_condition = trial.condition.model_condition(
+            family,
+            registration.harness_version,
+            trial_timeout_seconds=registration.trial_timeout_seconds,
+            source_revision=source_revision,
+            registration_hash=registration.digest(),
+        )
         adapter = SubprocessWorkspaceAdapter(
             SubprocessAdapterConfig(
                 command=trial.condition.command,
@@ -546,6 +646,16 @@ def run_pilot_batch(registration: PilotRegistration, *, allow_network: bool = Fa
         "started_at_utc_epoch": started_at,
         "completed_at_utc_epoch": time.time(),
         "conditions": [condition.to_public_dict() for condition in registration.conditions],
+        "source_revision": source_revision,
+        "trial_timeout_seconds": registration.trial_timeout_seconds,
+        "budget_overrides": dict(sorted(registration.budget_overrides.items())),
+        "registration_summary": {
+            "family_ids": list(registration.family_ids),
+            "repetitions": registration.repetitions,
+            "conditions": [condition.to_public_dict() for condition in registration.conditions],
+            "trial_timeout_seconds": registration.trial_timeout_seconds,
+            "budget_overrides": dict(sorted(registration.budget_overrides.items())),
+        },
         "planned_trials": [trial.to_public_dict() for trial in planned],
         "results": results,
         "aggregates": _aggregates(results),

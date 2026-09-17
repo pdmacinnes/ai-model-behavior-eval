@@ -22,6 +22,8 @@ _BEHAVIOR_FIELDS = (
     "repair_attempted",
     "edit_count",
     "termination_reason",
+    "budget_depleted",
+    "action_rejected_for_insufficient_budget",
     "budget_exhausted",
     "checkpoint_count",
     "leading_hypotheses",
@@ -47,6 +49,8 @@ _OPERATIONAL_FIELDS = (
     "confidence_sequence",
     "rejected_action_count",
     "remaining_cost",
+    "budget_depleted",
+    "action_rejected_for_insufficient_budget",
     "budget_exhausted",
 )
 _LOCAL_PATH_PATTERN = re.compile(r"(?:[A-Za-z]:\\[^\s\"']+|/(?:Users|home|workspace)/[^\s\"']+)")
@@ -98,6 +102,8 @@ def _empty_behavior() -> dict[str, Any]:
         "repair_attempted": None,
         "edit_count": None,
         "termination_reason": None,
+        "budget_depleted": None,
+        "action_rejected_for_insufficient_budget": None,
         "budget_exhausted": None,
         "checkpoint_count": None,
         "leading_hypotheses": [],
@@ -179,7 +185,12 @@ def build_run_narrative(run: dict[str, Any]) -> dict[str, str]:
     else:
         repair = f"attempted a repair with {edit_count} edit(s)" if edit_count else "did not attempt a repair edit"
         termination = _display(behavior.get("termination_reason"), "no explicit termination reason")
-        budget = "the run encountered an evidence-budget rejection" if behavior.get("budget_exhausted") else "the run did not encounter an evidence-budget rejection"
+        if behavior.get("budget_depleted"):
+            budget = "the run depleted its evidence budget"
+        elif behavior.get("action_rejected_for_insufficient_budget"):
+            budget = "the run encountered an action rejection because its remaining evidence budget was insufficient"
+        else:
+            budget = "the run did not encounter an evidence-budget limit"
         verifier = _display(run.get("verifier_status"))
         outcome = f"The run {repair}, ended with “{termination}”, and {budget}. Verifier status was {verifier}."
 
@@ -256,7 +267,12 @@ def _merge_trial_metadata(manifest: dict[str, Any], batch_id: str, *, public_man
     return metadata
 
 
-def _load_batch_metadata(source_root: Path, *, source_kind: str) -> tuple[dict[str, dict[str, Any]], list[str]]:
+def _load_batch_metadata(
+    source_root: Path,
+    *,
+    source_kind: str,
+    selected_batch_ids: list[str] | None = None,
+) -> tuple[dict[str, dict[str, Any]], list[str]]:
     batches_root = source_root / "batches"
     if not batches_root.exists():
         return {}, []
@@ -265,7 +281,18 @@ def _load_batch_metadata(source_root: Path, *, source_kind: str) -> tuple[dict[s
 
     by_run: dict[str, dict[str, Any]] = {}
     batch_ids: list[str] = []
-    for batch_dir in sorted(path for path in batches_root.iterdir() if path.is_dir()):
+    requested = None if selected_batch_ids is None else list(selected_batch_ids)
+    if requested is not None and len(set(requested)) != len(requested):
+        raise BehaviorReportError("batch selection contains duplicates")
+    available_dirs = {path.name: path for path in batches_root.iterdir() if path.is_dir()}
+    if requested is not None:
+        missing = sorted(set(requested) - set(available_dirs))
+        if missing:
+            raise BehaviorReportError(f"requested batch does not exist: {', '.join(missing)}")
+        batch_dirs = [available_dirs[batch_id] for batch_id in requested]
+    else:
+        batch_dirs = sorted(available_dirs.values())
+    for batch_dir in batch_dirs:
         manifest_path = batch_dir / "manifest.json"
         if not manifest_path.is_file():
             continue
@@ -418,6 +445,10 @@ def _patterns_for_run(run: dict[str, Any]) -> list[str]:
         patterns.append("no_repair_edit")
     if behavior.get("budget_exhausted") is True:
         patterns.append("budget_exhausted")
+    if behavior.get("budget_depleted") is True:
+        patterns.append("budget_depleted")
+    if behavior.get("action_rejected_for_insufficient_budget") is True:
+        patterns.append("action_rejected_for_insufficient_budget")
     rejected_count = behavior.get("rejected_action_count")
     if isinstance(rejected_count, int) and rejected_count > 0:
         patterns.append("rejected_action_recorded")
@@ -435,7 +466,17 @@ def _build_profiles(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "condition_id": condition_id,
                 "condition": {
                     key: condition[key]
-                    for key in ("condition_id", "provider", "model_id", "adapter_id", "reasoning_effort", "network_required")
+                    for key in (
+                        "condition_id",
+                        "provider",
+                        "model_id",
+                        "adapter_id",
+                        "reasoning_effort",
+                        "network_required",
+                        "transport",
+                        "timeout_seconds",
+                        "worker_bounds",
+                    )
                     if key in condition
                 },
                 "run_count": 0,
@@ -533,16 +574,33 @@ def _build_case_narratives(runs: list[dict[str, Any]], comparisons: list[dict[st
     return narratives
 
 
-def build_behavior_report(source_root: Path, *, source_kind: str) -> dict[str, Any]:
+def build_behavior_report(
+    source_root: Path,
+    *,
+    source_kind: str,
+    selected_batch_ids: list[str] | None = None,
+) -> dict[str, Any]:
     source_root = source_root.resolve()
     runs_root = source_root / "runs"
     if not runs_root.exists() or not runs_root.is_dir():
         raise BehaviorReportError("source must contain a runs directory")
-    batch_metadata, batch_ids = _load_batch_metadata(source_root, source_kind=source_kind)
+    batch_metadata, batch_ids = _load_batch_metadata(
+        source_root,
+        source_kind=source_kind,
+        selected_batch_ids=selected_batch_ids,
+    )
     runs: list[dict[str, Any]] = []
     skipped: list[str] = []
     seen_run_ids: set[str] = set()
     for run_dir in sorted(path for path in runs_root.iterdir() if path.is_dir()):
+        if selected_batch_ids is not None:
+            raw_run_path = run_dir / "run.json"
+            if not raw_run_path.is_file():
+                skipped.append(run_dir.name)
+                continue
+            raw_run = _read_json(raw_run_path)
+            if not isinstance(raw_run, dict) or raw_run.get("run_id") not in batch_metadata:
+                continue
         try:
             entry = _run_entry(run_dir, batch_metadata)
         except FileNotFoundError:
