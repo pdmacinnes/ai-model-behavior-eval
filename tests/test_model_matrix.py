@@ -21,9 +21,9 @@ MATRIX_PATH = ROOT / "configs" / "model_matrix.json"
 
 
 class ModelMatrixTests(unittest.TestCase):
-    def test_catalog_contains_active_models_and_pending_meta(self):
+    def test_catalog_contains_active_models(self):
         matrix = load_model_matrix(MATRIX_PATH)
-        self.assertEqual(len(matrix.active_conditions), 11)
+        self.assertEqual(len(matrix.active_conditions), 12)
         self.assertEqual(
             {condition.model_id for condition in matrix.active_conditions},
             {
@@ -38,13 +38,20 @@ class ModelMatrixTests(unittest.TestCase):
                 "deepseek-v4-pro",
                 "qwen3.8-max-0902",
                 "kimi-k2.6",
+                "muse-spark-1.3",
             },
         )
-        self.assertEqual([item.provider for item in matrix.pending_conditions], ["meta"])
-        self.assertEqual(matrix.providers, ("alibaba", "anthropic", "deepseek", "google", "moonshot", "openai", "xai"))
+        self.assertEqual(matrix.pending_conditions, ())
+        self.assertEqual(
+            matrix.providers,
+            ("alibaba", "anthropic", "deepseek", "google", "meta", "moonshot", "openai", "xai"),
+        )
         google = matrix.conditions_for_provider("google")
         self.assertEqual(len(google), 1)
         self.assertEqual(google[0].transport, "google-gemini")
+        meta = matrix.conditions_for_provider("meta")
+        self.assertEqual(len(meta), 1)
+        self.assertEqual(meta[0].model_id, "muse-spark-1.3")
 
     def test_catalog_rejects_unknown_fields_and_placeholders(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -85,8 +92,8 @@ class ModelMatrixTests(unittest.TestCase):
                 self.assertNotIn("verifier", serialized.lower())
             smoke_trials += len(conditions) * 2 * smoke["repetitions"]
             full_trials += len(conditions) * 6 * full["repetitions"]
-        self.assertEqual(smoke_trials, 22)
-        self.assertEqual(full_trials, 132)
+        self.assertEqual(smoke_trials, 24)
+        self.assertEqual(full_trials, 144)
 
     def test_batch_label_creates_distinguishable_rerun(self):
         matrix = load_model_matrix(MATRIX_PATH)
@@ -115,7 +122,7 @@ class ModelMatrixTests(unittest.TestCase):
                 Path(directory),
                 project_root=ROOT,
             )
-            self.assertEqual(len(paths), 14)
+            self.assertEqual(len(paths), 16)
             for path in paths:
                 registration = load_pilot_registration(path)
                 self.assertTrue(registration.conditions)

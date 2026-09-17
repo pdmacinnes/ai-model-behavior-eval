@@ -77,14 +77,14 @@
       "model_id": "kimi-k2.6",
       "transport": "openai-compatible",
       "reasoning_effort": null
-    }
-  ],
-  "pending_conditions": [
+    },
     {
       "condition_id": "meta-muse-spark-1-3",
       "provider": "meta",
-      "display_name": "Meta Muse Spark 1.3",
-      "reason": "Awaiting Meta API account access and the exact model identifier."
+      "model_id": "muse-spark-1.3",
+      "transport": "openai-compatible",
+      "reasoning_effort": null
     }
-  ]
+  ],
+  "pending_conditions": []
 }
